@@ -1,0 +1,32 @@
+name: Build FFT Benchmark (Apple Silicon)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch: # Enables manual trigger from Actions tab
+
+jobs:
+  build:
+    runs-on: macos-latest  # Apple Silicon runner (M-series)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Compile
+        run: |
+          clang++ -std=c++17 -O3 -march=native -ffast-math \
+            main.cpp -o fft_benchmark -framework Accelerate
+
+      - name: Verify architecture
+        run: file fft_benchmark
+
+      - name: Package for download
+        run: tar czf fft_benchmark_macos.tar.gz fft_benchmark
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fft-benchmark-apple-silicon
+          path: fft_benchmark_macos.tar.gz
+          retention-days: 90
