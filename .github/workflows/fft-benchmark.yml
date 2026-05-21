@@ -30,10 +30,10 @@ jobs:
           EXIT_CODE=$?
           cat benchmark_results.txt
           if [ $EXIT_CODE -ne 0 ]; then
-            echo "❌ Benchmark crashed with exit code $EXIT_CODE"
+            echo "Benchmark crashed with exit code $EXIT_CODE"
             exit $EXIT_CODE
           fi
-          echo "✅ Benchmark completed successfully"
+          echo "Benchmark completed successfully"
 
       - name: Validate Output
         run: |
