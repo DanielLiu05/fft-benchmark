@@ -7,7 +7,8 @@ on:
 
 jobs:
   run-benchmark:
-    runs-on: macos-latest
+    # macos-latest (macos-14 and newer) defaults to Apple Silicon (M1/M2) ARM64 runners
+    runs-on: macos-latest 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,7 +22,7 @@ jobs:
       - name: Verify architecture
         run: |
           ARCH=$(file fft_benchmark | grep -o 'arm64')
-          [ "$ARCH" = "arm64" ] && echo "Native ARM64 binary" || { echo "Wrong arch"; exit 1; }
+          [ "$ARCH" = "arm64" ] && echo "Native ARM64 binary confirmed" || { echo "Wrong architecture"; exit 1; }
 
       - name: Run Benchmark
         run: |
@@ -38,9 +39,26 @@ jobs:
       - name: Validate Output
         run: |
           [ -s benchmark_results.txt ] || { echo "Empty output"; exit 1; }
-          grep -q "Avg Time:" benchmark_results.txt || { echo "Missing timing data"; exit 1; }
+          
+          # Updated to match the new statistical benchmark harness
+          grep -q "Advanced FFT Benchmark" benchmark_results.txt || { echo "Missing benchmark header"; exit 1; }
+          grep -q "Median:" benchmark_results.txt || { echo "Missing statistical timing data"; exit 1; }
+          grep -q "Custom ARM NEON" benchmark_results.txt || { echo "Missing NEON engine results"; exit 1; }
+          
+          echo "Output validation successful!"
 
-      - name: Upload Results
+      - name: Generate GitHub Job Summary
+        # This renders the results directly on the GitHub Actions UI page
+        run: |
+          echo "## Apple Silicon FFT Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "**Architecture:** ARM64 (Apple Silicon M-Series)" >> $GITHUB_STEP_SUMMARY
+          echo "**Compiler:** Clang with \`-O3 -march=native -ffast-math\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          cat benchmark_results.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Results Artifact
         uses: actions/upload-artifact@v4
         with:
           name: fft-benchmark-results-arm64
