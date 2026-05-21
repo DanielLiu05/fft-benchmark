@@ -1,0 +1,55 @@
+name: FFT Benchmark (Apple Silicon)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch: # Allows manual trigger from the Actions tab
+
+jobs:
+  run-benchmark:
+    runs-on: macos-latest  # Apple Silicon (M-series) runner
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compile native ARM64 binary
+        run: |
+          clang++ -std=c++17 -O3 -march=native -ffast-math \
+            main.cpp -o fft_benchmark -framework Accelerate
+          echo "Compilation successful"
+
+      - name: Verify binary architecture
+        run: |
+          file fft_benchmark
+          # Ensure it's actually ARM64 and not x86_64
+          if ! file fft_benchmark | grep -q "arm64"; then
+            echo "ERROR: Binary is not ARM64!"
+            exit 1
+          fi
+
+      - name: Run benchmark & capture output
+        run: |
+          echo "Running FFT Benchmark..."
+          ./fft_benchmark > benchmark_results.txt 2>&1
+          cat benchmark_results.txt
+          echo "Benchmark completed"
+
+      - name: Validate results
+        run: |
+          if [ ! -s benchmark_results.txt ]; then
+            echo "ERROR: Output file is empty!"
+            exit 1
+          fi
+          grep -q "Avg Time:" benchmark_results.txt || {
+            echo "ERROR: Benchmark output missing expected timing data!"
+            exit 1
+          }
+          echo "Results validated successfully"
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: fft-benchmark-results-arm64
+          path: benchmark_results.txt
+          retention-days: 90
