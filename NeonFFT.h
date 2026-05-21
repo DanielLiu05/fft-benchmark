@@ -6,6 +6,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <algorithm>
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -19,6 +20,8 @@ public:
             throw std::invalid_argument("NEON FFT requires order >= 3 (size >= 8) for vectorization");
         }
         
+        // Twiddle table MUST be size fftSize to prevent out-of-bounds 
+        // when calculating W3 (3 * j * step) in the final stages.
         twiddles.resize(fftSize);  
         for (int i = 0; i < fftSize; ++i) {
             double phase = -2.0 * M_PI * i / fftSize;
@@ -26,7 +29,7 @@ public:
         }
 
         // =================================================================
-        // TWIDDLE PRE-PACKING (SoA Layout)
+        // TWIDDLE PRE-PACKING (Eliminates the SIMD Memory Wall)
         // ================================================================= 
         packed_twiddles.resize(order + 1);
         
@@ -37,23 +40,30 @@ public:
 
             if (m_4 >= 4) {
                 int num_j_blocks = m_4 / 4;
+                // 24 floats per block: W1(8 floats), W2(8 floats), W3(8 floats)
                 packed_twiddles[s].resize(num_j_blocks * 24);
                 float* ptr = packed_twiddles[s].data();
 
                 for (int j = 0; j < m_4; j += 4) {
+                    // Pack W1
                     for (int i = 0; i < 4; ++i) {
                         Complex w = twiddles[(j + i) * step];
-                        ptr[i] = w.real(); ptr[4 + i] = w.imag();
+                        ptr[i] = w.real();
+                        ptr[4 + i] = w.imag();
                     }
                     ptr += 8;
+                    // Pack W2
                     for (int i = 0; i < 4; ++i) {
                         Complex w = twiddles[2 * (j + i) * step];
-                        ptr[i] = w.real(); ptr[4 + i] = w.imag();
+                        ptr[i] = w.real();
+                        ptr[4 + i] = w.imag();
                     }
                     ptr += 8;
+                    // Pack W3
                     for (int i = 0; i < 4; ++i) {
                         Complex w = twiddles[3 * (j + i) * step];
-                        ptr[i] = w.real(); ptr[4 + i] = w.imag();
+                        ptr[i] = w.real();
+                        ptr[4 + i] = w.imag();
                     }
                     ptr += 8;
                 }
@@ -84,16 +94,16 @@ public:
         }
     }
 
-    void performForward(const Complex* input, Complex* output) const {
+    // =====================================================================
+    // OUT-OF-PLACE FFT (With __restrict__ and Manual Loop Unrolling)
+    // =====================================================================
+    void performForward(const Complex* __restrict__ input, Complex* __restrict__ output) const {
         if (input == output) {
             // Fallback for strict in-place calls
             bitReverse(output, fftSize);
         } else {
-            // =============================================================
-            // OUT-OF-PLACE BIT-REVERSAL (The Cache-Locality Trick)
-            // =============================================================
             // Random Read + SEQUENTIAL WRITE.
-            // Unrolled by 4 to allow the ARM64 CPU to issue multiple random 
+            // Manually unrolled by 4 to allow the ARM64 CPU to issue multiple random 
             // loads in parallel, hiding memory latency while the store buffer 
             // handles the sequential writes effortlessly.
             int i = 0;
@@ -117,10 +127,12 @@ public:
         performForward(output); 
     }
 
-    void performForward(Complex* data) const {
-        float* fdata = reinterpret_cast<float*>(data); 
+    // =====================================================================
+    // IN-PLACE SIMD BUTTERFLY MATH
+    // =====================================================================
+    void performForward(Complex* __restrict__ data) const {
+        float* __restrict__ fdata = reinterpret_cast<float*>(data); 
         
-        // FIX: Start at s=2 to match packed twiddles
         int s = 2;
         
         // Radix-2 stage for odd orders
@@ -151,17 +163,24 @@ public:
                 // =========================================================
                 // NEON VECTORIZED PATH
                 // =========================================================
-                const float* tw_ptr_base = packed_twiddles[s].data();
+                const float* __restrict__ tw_ptr_base = packed_twiddles[s].data();
                 
                 for (int k = 0; k < fftSize; k += m) {
-                    const float* tw_ptr = tw_ptr_base;
+                    const float* __restrict__ tw_ptr = tw_ptr_base;
                     
                     for (int j = 0; j < m_4; j += 4) {
+                        // Note: Software prefetching (__builtin_prefetch) is intentionally 
+                        // omitted here. For N=1024 (8KB), the entire dataset fits in L1 cache,
+                        // and Apple Silicon's hardware prefetcher is vastly superior.
+                        // Adding software prefetches here would waste instruction decode bandwidth.
+
+                        // 1. LOAD & DE-INTERLEAVE DATA
                         float32x4x2_t A0 = vld2q_f32(&fdata[2 * (k + j)]);
                         float32x4x2_t A1 = vld2q_f32(&fdata[2 * (k + j + m_4)]);
                         float32x4x2_t A2 = vld2q_f32(&fdata[2 * (k + j + 2 * m_4)]);
                         float32x4x2_t A3 = vld2q_f32(&fdata[2 * (k + j + 3 * m_4)]);
                         
+                        // 2. LOAD PRE-PACKED TWIDDLES
                         float32x4_t W1_re = vld1q_f32(tw_ptr +  0);
                         float32x4_t W1_im = vld1q_f32(tw_ptr +  4);
                         float32x4_t W2_re = vld1q_f32(tw_ptr +  8);
@@ -170,6 +189,7 @@ public:
                         float32x4_t W3_im = vld1q_f32(tw_ptr + 20);
                         tw_ptr  += 24;
 
+                        // 3. COMPLEX MULTIPLICATION (FMA)
                         float32x4_t a1_re = vmulq_f32(W1_re, A1.val[0]);
                         a1_re = vfmsq_f32(a1_re, W1_im, A1.val[1]);
                         float32x4_t a1_im = vmulq_f32(W1_re, A1.val[1]);
@@ -188,6 +208,7 @@ public:
                         a3_im = vfmaq_f32(a3_im, W3_im, A3.val[0]);
                         A3.val[0] = a3_re; A3.val[1] = a3_im;
 
+                        // 4. RADIX-4 BUTTERFLY MATH
                         float32x4_t t0_re = vaddq_f32(A0.val[0], A2.val[0]);
                         float32x4_t t0_im = vaddq_f32(A0.val[1], A2.val[1]);
                         float32x4_t t1_re = vsubq_f32(A0.val[0], A2.val[0]);
@@ -210,6 +231,7 @@ public:
                         O3.val[0] = vsubq_f32(t1_re, t3_im);
                         O3.val[1] = vaddq_f32(t1_im, t3_re);
 
+                        // 5. INTERLEAVE & STORE
                         vst2q_f32(&fdata[2 * (k + j)], O0);
                         vst2q_f32(&fdata[2 * (k + j + m_4)], O1);
                         vst2q_f32(&fdata[2 * (k + j + 2 * m_4)], O2);
@@ -246,6 +268,7 @@ public:
             }
         }
     }
+
 private:
     int order;
     int fftSize;
