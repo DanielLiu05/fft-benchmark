@@ -20,7 +20,7 @@ public:
             throw std::invalid_argument("NEON FFT requires order >= 3 (size >= 8) for vectorization");
         }
         
-        // FIX: Twiddle table MUST be size fftSize to prevent out-of-bounds 
+        // Twiddle table MUST be size fftSize to prevent out-of-bounds 
         // when calculating W3 (3 * j * step) in the final stages.
         twiddles.resize(fftSize); 
         for (int i = 0; i < fftSize; ++i) {
@@ -112,7 +112,7 @@ public:
         //float* fdata = static_cast<float*>(__builtin_assume_aligned(data, 16));
         float* fdata = reinterpret_cast<float*>(data); 
         // 2. Cooley-Tukey Iterative Mixed-Radix DIT Butterfly
-        int s = 1;
+        int s = 2;
         
         // Radix-2 stage for odd orders
         if (order % 2 != 0) {
