@@ -97,9 +97,6 @@ public:
             }
             bitReverseLookup[i] = rev;
         }
-        
-        // Pre-allocate buffer to avoid allocation inside the timing loop
-        bitReverseTemp.resize(fftSize);
     }
 
     void performForward(const Complex* input, Complex* output) const {
