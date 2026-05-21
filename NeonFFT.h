@@ -97,6 +97,7 @@ public:
             }
             bitReverseLookup[i] = rev;
         }
+    
     }
 
     void performForward(const Complex* input, Complex* output) const {
@@ -108,7 +109,8 @@ public:
     void performForward(Complex* data) const {
         // 1. Bit-reversal permutation
         bitReverse(data, fftSize);
-        float* fdata = static_cast<float*>(__builtin_assume_aligned(data, 16));
+        //float* fdata = static_cast<float*>(__builtin_assume_aligned(data, 16));
+        float* fdata = reinterpret_cast<float*>(data); 
         // 2. Cooley-Tukey Iterative Mixed-Radix DIT Butterfly
         int s = 1;
         
