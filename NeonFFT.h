@@ -14,7 +14,7 @@
 class NeonFFT {
 public:
     using Complex = std::complex<float>;
-
+    
     NeonFFT(int order) : order(order), fftSize(1 << order) {
         if (order < 3) {
             throw std::invalid_argument("NEON FFT requires order >= 3 (size >= 8) for vectorization");
@@ -22,7 +22,7 @@ public:
         
         // Twiddle table MUST be size fftSize to prevent out-of-bounds 
         // when calculating W3 (3 * j * step) in the final stages.
-        twiddles.resize(fftSize); 
+        twiddles.resize(fftSize);  
         for (int i = 0; i < fftSize; ++i) {
             double phase = -2.0 * M_PI * i / fftSize;
             twiddles[i] = Complex((float)std::cos(phase), (float)std::sin(phase));
@@ -30,9 +30,7 @@ public:
 
         // =================================================================
         // TWIDDLE PRE-PACKING (Eliminates the SIMD Memory Wall)
-        // =================================================================
-        // We reorganize twiddles into contiguous SoA (Structure of Arrays) blocks
-        // so the inner loop can use fast vld1q_f32 instead of scalar gathers.
+        // ================================================================= 
         packed_twiddles.resize(order + 1);
         
         for (int s = 2; s <= order; s += 2) {
@@ -43,7 +41,6 @@ public:
             if (m_4 >= 4) {
                 int num_j_blocks = m_4 / 4;
                 // 24 floats per block: W1(8 floats), W2(8 floats), W3(8 floats)
-                // Layout: [W1_re(4), W1_im(4), W2_re(4), W2_im(4), W3_re(4), W3_im(4)]
                 packed_twiddles[s].resize(num_j_blocks * 24);
                 float* ptr = packed_twiddles[s].data();
 
@@ -74,7 +71,7 @@ public:
         }
 
         // =================================================================
-        // BIT-REVERSAL PRECOMPUTATION (Eliminates allocation & shift math)
+        // BIT-REVERSAL PRECOMPUTATION
         // =================================================================
         bitReverseLookup.resize(fftSize);
         for (int i = 0; i < fftSize; ++i) {
@@ -82,14 +79,12 @@ public:
             int x = i;
             int shift = order;
             
-            // If order is odd, the innermost stage is Radix-2
-            if (order % 2 != 0) {
+            if (order % 2 != 0)  {
                 shift -= 1;
                 rev |= (x & 1) << shift;
                 x >>= 1;
             }
             
-            // Remaining stages are Radix-4
             while (shift > 0) {
                 shift -= 2;
                 rev |= (x & 3) << shift;
@@ -97,21 +92,47 @@ public:
             }
             bitReverseLookup[i] = rev;
         }
-    
     }
 
-    void performForward(const Complex* input, Complex* output) const {
-        std::copy(input, input + fftSize, output);
+    // =====================================================================
+    // OUT-OF-PLACE FFT (With __restrict__ and Manual Loop Unrolling)
+    // =====================================================================
+    void performForward(const Complex* __restrict__ input, Complex* __restrict__ output) const {
+        if (input == output) {
+            // Fallback for strict in-place calls
+            bitReverse(output, fftSize);
+        } else {
+            // Random Read + SEQUENTIAL WRITE.
+            // Manually unrolled by 4 to allow the ARM64 CPU to issue multiple random 
+            // loads in parallel, hiding memory latency while the store buffer 
+            // handles the sequential writes effortlessly.
+            int i = 0;
+            for (; i <= fftSize - 4; i += 4) {
+                Complex c0 = input[bitReverseLookup[i]];
+                Complex c1 = input[bitReverseLookup[i+1]];
+                Complex c2 = input[bitReverseLookup[i+2]];
+                Complex c3 = input[bitReverseLookup[i+3]];
+                
+                output[i]   = c0;
+                output[i+1] = c1;
+                output[i+2] = c2;
+                output[i+3] = c3;
+            }
+            for (; i < fftSize; ++i) {
+                output[i] = input[bitReverseLookup[i]];
+            }
+        }
+        
+        // Run the SIMD butterflies in-place on the output buffer
         performForward(output); 
     }
-    
-    
-    void performForward(Complex* data) const {
-        // 1. Bit-reversal permutation
-        bitReverse(data, fftSize);
-        //float* fdata = static_cast<float*>(__builtin_assume_aligned(data, 16));
-        float* fdata = reinterpret_cast<float*>(data); 
-        // 2. Cooley-Tukey Iterative Mixed-Radix DIT Butterfly
+
+    // =====================================================================
+    // IN-PLACE SIMD BUTTERFLY MATH
+    // =====================================================================
+    void performForward(Complex* __restrict__ data) const {
+        float* __restrict__ fdata = reinterpret_cast<float*>(data); 
+        
         int s = 2;
         
         // Radix-2 stage for odd orders
@@ -130,7 +151,6 @@ public:
                     data[k + j + half_m] = u - t;
                 }
             }
-            s = 2;
         }
 
         // Radix-4 stages
@@ -141,46 +161,47 @@ public:
 
             if (m_4 >= 4) {
                 // =========================================================
-                // NEON VECTORIZED PATH (With Pre-Packed Twiddles)
+                // NEON VECTORIZED PATH
                 // =========================================================
-                const float* tw_ptr_base = packed_twiddles[s].data();
+                const float* __restrict__ tw_ptr_base = packed_twiddles[s].data();
                 
                 for (int k = 0; k < fftSize; k += m) {
-                    const float* tw_ptr = tw_ptr_base; // Reset twiddle pointer for each block
+                    const float* __restrict__ tw_ptr = tw_ptr_base;
                     
                     for (int j = 0; j < m_4; j += 4) {
-                        
+                        // Note: Software prefetching (__builtin_prefetch) is intentionally 
+                        // omitted here. For N=1024 (8KB), the entire dataset fits in L1 cache,
+                        // and Apple Silicon's hardware prefetcher is vastly superior.
+                        // Adding software prefetches here would waste instruction decode bandwidth.
+
                         // 1. LOAD & DE-INTERLEAVE DATA
                         float32x4x2_t A0 = vld2q_f32(&fdata[2 * (k + j)]);
                         float32x4x2_t A1 = vld2q_f32(&fdata[2 * (k + j + m_4)]);
                         float32x4x2_t A2 = vld2q_f32(&fdata[2 * (k + j + 2 * m_4)]);
                         float32x4x2_t A3 = vld2q_f32(&fdata[2 * (k + j + 3 * m_4)]);
                         
-                        // 2. LOAD PRE-PACKED TWIDDLES (Continuous SIMD loads!)
+                        // 2. LOAD PRE-PACKED TWIDDLES
                         float32x4_t W1_re = vld1q_f32(tw_ptr +  0);
                         float32x4_t W1_im = vld1q_f32(tw_ptr +  4);
                         float32x4_t W2_re = vld1q_f32(tw_ptr +  8);
                         float32x4_t W2_im = vld1q_f32(tw_ptr + 12);
                         float32x4_t W3_re = vld1q_f32(tw_ptr + 16);
                         float32x4_t W3_im = vld1q_f32(tw_ptr + 20);
-                        tw_ptr += 24; // Advance to next j-block
+                        tw_ptr  += 24;
 
                         // 3. COMPLEX MULTIPLICATION (FMA)
-                        // A1 * W1
                         float32x4_t a1_re = vmulq_f32(W1_re, A1.val[0]);
                         a1_re = vfmsq_f32(a1_re, W1_im, A1.val[1]);
                         float32x4_t a1_im = vmulq_f32(W1_re, A1.val[1]);
                         a1_im = vfmaq_f32(a1_im, W1_im, A1.val[0]);
                         A1.val[0] = a1_re; A1.val[1] = a1_im;
 
-                        // A2 * W2
                         float32x4_t a2_re = vmulq_f32(W2_re, A2.val[0]);
                         a2_re = vfmsq_f32(a2_re, W2_im, A2.val[1]);
                         float32x4_t a2_im = vmulq_f32(W2_re, A2.val[1]);
                         a2_im = vfmaq_f32(a2_im, W2_im, A2.val[0]);
                         A2.val[0] = a2_re; A2.val[1] = a2_im;
 
-                        // A3 * W3
                         float32x4_t a3_re = vmulq_f32(W3_re, A3.val[0]);
                         a3_re = vfmsq_f32(a3_re, W3_im, A3.val[1]);
                         float32x4_t a3_im = vmulq_f32(W3_re, A3.val[1]);
@@ -225,7 +246,7 @@ public:
                     for (int j = 0; j < m_4; ++j) {
                         Complex w1 = twiddles[j * step];
                         Complex w2 = twiddles[2 * j * step];
-                        Complex w3 = twiddles[3 * j * step];  
+                        Complex w3 = twiddles[3 * j * step];   
 
                         Complex a0 = data[k + j];
                         Complex a1 = data[k + j + m_4] * w1;
@@ -251,15 +272,15 @@ public:
 private:
     int order;
     int fftSize;
-    std::vector<Complex> twiddles;               // Used for scalar fallbacks and bit-reversal
-    std::vector<std::vector<float>> packed_twiddles; // SoA layout for SIMD inner loops
-    
-    std::vector<int> bitReverseLookup;           // Precomputed bit-reversal indices
+    std::vector<Complex> twiddles;
+    std::vector<std::vector<float>> packed_twiddles;
+    std::vector<int> bitReverseLookup;
 
+    // Kept for safety, though the Out-of-Place path bypasses it
     void bitReverse(Complex* data, int n) const {
-    for (int i = 0; i < n; ++i) {
-        int j = bitReverseLookup[i];
-        if (i < j) std::swap(data[i], data[j]); 
+        for (int i = 0; i < n; ++i) {
+            int j = bitReverseLookup[i];
+            if (i < j) std::swap(data[i], data[j]); 
+        }
     }
-}
 };
