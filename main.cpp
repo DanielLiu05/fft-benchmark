@@ -36,9 +36,15 @@ void runBenchmark(const std::string& engineName, int order, int iterations) {
         bytes += alignment - (bytes % alignment);
     }
 
-    auto* inputBuffer  = static_cast<std::complex<float>*>(aligned_alloc(alignment, bytes));
-    auto* outputBuffer = static_cast<std::complex<float>*>(aligned_alloc(alignment, bytes));
-
+    void* rawIn = nullptr;
+    void* rawOut = nullptr;
+    if (posix_memalign(&rawIn, alignment, bytes) != 0 || 
+        posix_memalign(&rawOut, alignment, bytes) != 0) {
+        std::cerr << "Memory allocation failed!\n";
+        return;
+    }
+    auto* inputBuffer  = static_cast<std::complex<float>*>(rawIn);
+    auto* outputBuffer = static_cast<std::complex<float>*>(rawOut);
     if (!inputBuffer || !outputBuffer) {
         std::cerr << "Memory allocation failed!\n";
         return;
