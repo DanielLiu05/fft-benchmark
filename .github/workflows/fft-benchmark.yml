@@ -3,51 +3,44 @@ name: FFT Benchmark (Apple Silicon)
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch: # Allows manual trigger from the Actions tab
+  workflow_dispatch:
 
 jobs:
   run-benchmark:
-    runs-on: macos-latest  # Apple Silicon (M-series) runner
-
+    runs-on: macos-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Compile native ARM64 binary
+      - name: Compile
         run: |
-          clang++ -std=c++17 -O3 -march=native -ffast-math \
+          clang++ -std=c++17 -O3 -march=native -ffast-math -g \
             main.cpp -o fft_benchmark -framework Accelerate
           echo "Compilation successful"
 
-      - name: Verify binary architecture
+      - name: Verify architecture
         run: |
-          file fft_benchmark
-          # Ensure it's actually ARM64 and not x86_64
-          if ! file fft_benchmark | grep -q "arm64"; then
-            echo "ERROR: Binary is not ARM64!"
-            exit 1
-          fi
+          ARCH=$(file fft_benchmark | grep -o 'arm64')
+          [ "$ARCH" = "arm64" ] && echo "Native ARM64 binary" || { echo "Wrong arch"; exit 1; }
 
-      - name: Run benchmark & capture output
+      - name: Run Benchmark
         run: |
           echo "Running FFT Benchmark..."
           ./fft_benchmark > benchmark_results.txt 2>&1
+          EXIT_CODE=$?
           cat benchmark_results.txt
-          echo "Benchmark completed"
-
-      - name: Validate results
-        run: |
-          if [ ! -s benchmark_results.txt ]; then
-            echo "ERROR: Output file is empty!"
-            exit 1
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ Benchmark crashed with exit code $EXIT_CODE"
+            exit $EXIT_CODE
           fi
-          grep -q "Avg Time:" benchmark_results.txt || {
-            echo "ERROR: Benchmark output missing expected timing data!"
-            exit 1
-          }
-          echo "Results validated successfully"
+          echo "✅ Benchmark completed successfully"
 
-      - name: Upload benchmark results
+      - name: Validate Output
+        run: |
+          [ -s benchmark_results.txt ] || { echo "Empty output"; exit 1; }
+          grep -q "Avg Time:" benchmark_results.txt || { echo "Missing timing data"; exit 1; }
+
+      - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
           name: fft-benchmark-results-arm64
