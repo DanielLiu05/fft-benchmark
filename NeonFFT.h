@@ -135,21 +135,52 @@ public:
         
         int s = 2;
         
-        // Radix-2 stage for odd orders
+        // =====================================================================
+        // RADIX-2 STAGE FOR ODD ORDERS (VECTORIZED)
+        // =====================================================================
         if (order % 2 != 0) {
-            int m = 2;
-            int half_m = 1;
-            int step = fftSize / 2;
+            // For Radix-2, m=2, half_m=1. The twiddle factor is always twiddles[0] = (1.0, 0.0).
+            // Thus, no complex multiplication is needed, just addition and subtraction.
             
-            for (int k = 0; k < fftSize; k += m) {
-                for (int j = 0; j < half_m; ++j) {
-                    Complex w = twiddles[j * step];
-                    Complex t = w * data[k + j + half_m];
-                    Complex u = data[k + j];
-                    
-                    data[k + j] = u + t;
-                    data[k + j + half_m] = u - t;
-                }
+            int k = 0;
+            // Vectorized path: process 8 complex numbers (4 butterflies) per iteration
+            for (; k <= fftSize - 8; k += 8) {
+                // 1. LOAD 8 COMPLEX NUMBERS (16 floats)
+                float32x4x2_t A = vld2q_f32(&fdata[2 * k]);
+                float32x4x2_t B = vld2q_f32(&fdata[2 * k + 8]);
+                
+                // 2. DE-INTERLEAVE to separate even (U) and odd (T) elements
+                // vuzp1 extracts even indices (0, 2, 4, 6), vuzp2 extracts odd indices (1, 3, 5, 7)
+                float32x4_t U_re = vuzp1q_f32(A.val[0], B.val[0]);
+                float32x4_t T_re = vuzp2q_f32(A.val[0], B.val[0]);
+                float32x4_t U_im = vuzp1q_f32(A.val[1], B.val[1]);
+                float32x4_t T_im = vuzp2q_f32(A.val[1], B.val[1]);
+                
+                // 3. BUTTERFLY MATH (Twiddle is 1+0i, so no FMA needed)
+                float32x4_t O0_re = vaddq_f32(U_re, T_re);
+                float32x4_t O0_im = vaddq_f32(U_im, T_im);
+                float32x4_t O1_re = vsubq_f32(U_re, T_re);
+                float32x4_t O1_im = vsubq_f32(U_im, T_im);
+                
+                // 4. INTERLEAVE BACK
+                // vzip1 takes the lower half, vzip2 takes the upper half
+                float32x4x2_t R0, R1;
+                R0.val[0] = vzip1q_f32(O0_re, O1_re);
+                R0.val[1] = vzip1q_f32(O0_im, O1_im);
+                R1.val[0] = vzip2q_f32(O0_re, O1_re);
+                R1.val[1] = vzip2q_f32(O0_im, O1_im);
+                
+                // 5. STORE
+                vst2q_f32(&fdata[2 * k], R0);
+                vst2q_f32(&fdata[2 * k + 8], R1);
+            }
+            
+            // Scalar fallback (Theoretically unreachable since fftSize is a power of 2 >= 8)
+            for (; k < fftSize; k += 2) {
+                Complex u = data[k];
+                Complex t = data[k + 1];
+                data[k] = u + t;
+                data[k + 1] = u - t;
             }
         }
 
