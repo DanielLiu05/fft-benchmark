@@ -7,7 +7,6 @@ on:
 
 jobs:
   run-benchmark:
-    # macos-latest (macos-14 and newer) defaults to Apple Silicon (M1/M2) ARM64 runners
     runs-on: macos-latest 
     steps:
       - name: Checkout
@@ -24,11 +23,34 @@ jobs:
           ARCH=$(file fft_benchmark | grep -o 'arm64')
           [ "$ARCH" = "arm64" ] && echo "Native ARM64 binary confirmed" || { echo "Wrong architecture"; exit 1; }
 
+      # 🔹 NEW STEP: Detect Apple Silicon chip details
+      - name: Detect Apple Chip & Log Hardware Context
+        run: |
+          echo "=== Hardware Detection ==="
+          CHIP=$(sysctl -n machdep.cpu.brand_string 2>/dev/null | grep -oE 'Apple M[0-9]+[A-Z ]*' | xargs || echo "Apple Silicon")
+          MODEL=$(sysctl -n hw.model 2>/dev/null || echo "N/A")
+          CORES=$(sysctl -n hw.activecpu 2>/dev/null || echo "N/A")
+          
+          echo "Chip: $CHIP"
+          echo "Model Identifier: $MODEL"
+          echo "Active CPU Cores: $CORES"
+          
+          # Save to environment for later steps
+          echo "chip_name=$CHIP" >> $GITHUB_ENV
+          echo "model_id=$MODEL" >> $GITHUB_ENV
+          echo "core_count=$CORES" >> $GITHUB_ENV
+
       - name: Run Benchmark
         run: |
-          echo "Running FFT Benchmark..."
+          echo "Running FFT Benchmark on ${chip_name:-Apple Silicon}..."
           ./fft_benchmark > benchmark_results.txt 2>&1
           EXIT_CODE=$?
+          
+          # Prepend hardware context to results file for traceability
+          if [ -f benchmark_results.txt ]; then
+            echo "# Hardware: ${chip_name:-Unknown} | Model: ${model_id:-N/A} | Cores: ${core_count:-N/A} | Runner: $GITHUB_RUN_ID" | cat - benchmark_results.txt > temp && mv temp benchmark_results.txt
+          fi
+          
           cat benchmark_results.txt
           if [ $EXIT_CODE -ne 0 ]; then
             echo "Benchmark crashed with exit code $EXIT_CODE"
@@ -39,19 +61,16 @@ jobs:
       - name: Validate Output
         run: |
           [ -s benchmark_results.txt ] || { echo "Empty output"; exit 1; }
-          
-          # Updated to match the new statistical benchmark harness
           grep -q "Advanced FFT Benchmark" benchmark_results.txt || { echo "Missing benchmark header"; exit 1; }
           grep -q "Median:" benchmark_results.txt || { echo "Missing statistical timing data"; exit 1; }
           grep -q "Custom ARM NEON" benchmark_results.txt || { echo "Missing NEON engine results"; exit 1; }
-          
           echo "Output validation successful!"
 
       - name: Generate GitHub Job Summary
-        # This renders the results directly on the GitHub Actions UI page
         run: |
           echo "## Apple Silicon FFT Benchmark Results" >> $GITHUB_STEP_SUMMARY
-          echo "**Architecture:** ARM64 (Apple Silicon M-Series)" >> $GITHUB_STEP_SUMMARY
+          echo "**Chip:** ${chip_name:-Apple Silicon}" >> $GITHUB_STEP_SUMMARY
+          echo "**Model:** ${model_id:-N/A} | **Cores:** ${core_count:-N/A}" >> $GITHUB_STEP_SUMMARY
           echo "**Compiler:** Clang with \`-O3 -march=native -ffast-math\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY
@@ -61,6 +80,6 @@ jobs:
       - name: Upload Results Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fft-benchmark-results-arm64
+          name: fft-benchmark-results-arm64-${{ env.chip_name }}
           path: benchmark_results.txt
           retention-days: 90
