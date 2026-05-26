@@ -23,7 +23,6 @@ jobs:
           ARCH=$(file fft_benchmark | grep -o 'arm64')
           [ "$ARCH" = "arm64" ] && echo "Native ARM64 binary confirmed" || { echo "Wrong architecture"; exit 1; }
 
-      # 🔹 NEW STEP: Detect Apple Silicon chip details
       - name: Detect Apple Chip & Log Hardware Context
         run: |
           echo "=== Hardware Detection ==="
