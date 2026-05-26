@@ -73,25 +73,7 @@ public:
         // =================================================================
         // BIT-REVERSAL PRECOMPUTATION
         // =================================================================
-        bitReverseLookup.resize(fftSize);
-        for (int i = 0; i < fftSize; ++i) {
-            int rev = 0;
-            int x = i;
-            int shift = order;
-            
-            if (order % 2 != 0)  {
-                shift -= 1;
-                rev |= (x & 1) << shift;
-                x >>= 1;
-            }
-            
-            while (shift > 0) {
-                shift -= 2;
-                rev |= (x & 3) << shift;
-                x >>= 2;
-            }
-            bitReverseLookup[i] = rev;
-        }
+        //now replaced with __builtin_bitreverse32
     }
 
     // =====================================================================
@@ -102,16 +84,18 @@ public:
             // Fallback for strict in-place calls
             bitReverse(output, fftSize);
         } else {
-            // Random Read + SEQUENTIAL WRITE.
-            // Manually unrolled by 4 to allow the ARM64 CPU to issue multiple random 
-            // loads in parallel, hiding memory latency while the store buffer 
-            // handles the sequential writes effortlessly.
+            // Out-of-place Bit-Reversal using ARM64 `rbit` intrinsic
             int i = 0;
             for (; i <= fftSize - 4; i += 4) {
-                Complex c0 = input[bitReverseLookup[i]];
-                Complex c1 = input[bitReverseLookup[i+1]];
-                Complex c2 = input[bitReverseLookup[i+2]];
-                Complex c3 = input[bitReverseLookup[i+3]];
+                uint32_t rev0 = __builtin_bitreverse32(i)   >> (32 - order);
+                uint32_t rev1 = __builtin_bitreverse32(i+1) >> (32 - order);
+                uint32_t rev2 = __builtin_bitreverse32(i+2) >> (32 - order);
+                uint32_t rev3 = __builtin_bitreverse32(i+3) >> (32 - order);
+                
+                Complex c0 = input[rev0];
+                Complex c1 = input[rev1];
+                Complex c2 = input[rev2];
+                Complex c3 = input[rev3];
                 
                 output[i]   = c0;
                 output[i+1] = c1;
@@ -119,7 +103,7 @@ public:
                 output[i+3] = c3;
             }
             for (; i < fftSize; ++i) {
-                output[i] = input[bitReverseLookup[i]];
+                output[i] = input[__builtin_bitreverse32(i) >> (32 - order)];
             }
         }
         
@@ -305,12 +289,11 @@ private:
     int fftSize;
     std::vector<Complex> twiddles;
     std::vector<std::vector<float>> packed_twiddles;
-    std::vector<int> bitReverseLookup;
 
     // Kept for safety, though the Out-of-Place path bypasses it
     void bitReverse(Complex* data, int n) const {
         for (int i = 0; i < n; ++i) {
-            int j = bitReverseLookup[i];
+            int j = __builtin_bitreverse32(i) >> (32 - order);
             if (i < j) std::swap(data[i], data[j]); 
         }
     }
