@@ -7,3 +7,4 @@ bit reversal done with __builtin_bitreverse32
 # testing
 right now the test suite only does size 1024 ffts. this is small enough to just sit entirely in the l1 cache. i plan to improve the benchmarking later to test larger sizes.
 # build
+use Clang with -O3 -march=native -ffast-math
