@@ -3,6 +3,11 @@ name: FFT Benchmark (Apple Silicon)
 on:
   push:
     branches: [ main, master ]
+    paths-ignore:
+      - '**.md'         # ignores all markdown files (like readme.md)
+      - 'docs/**'       # ignores a docs folder if you have one
+      - 'LICENSE'       # ignores license changes
+      - '**.yml'
   workflow_dispatch:
 
 jobs:
