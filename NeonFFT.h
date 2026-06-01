@@ -363,12 +363,13 @@ public:
                         float32x4_t A0_re = vld1q_f32(&re[k + j]);
                         float32x4_t A0_im = vld1q_f32(&im[k + j]);
                         
-                        float32x4_t A1_re = vld1q_f32(&re[k + j + m_4]);
-                        float32x4_t A1_im = vld1q_f32(&im[k + j + m_4]);
-                        
-                        float32x4_t A2_re = vld1q_f32(&re[k + j + 2 * m_4]);
-                        float32x4_t A2_im = vld1q_f32(&im[k + j + 2 * m_4]);
-                        
+                            // [FIX]: Swap A1 and A2 loads to compensate for Radix-2 bit reversal!
+                        float32x4_t A1_re = vld1q_f32(&re[k + j + 2 * m_4]); // Load from 2*m_4
+                        float32x4_t A1_im = vld1q_f32(&im[k + j + 2 * m_4]); 
+
+                        float32x4_t A2_re = vld1q_f32(&re[k + j + m_4]);     // Load from m_4
+                        float32x4_t A2_im = vld1q_f32(&im[k + j + m_4]);     
+
                         float32x4_t A3_re = vld1q_f32(&re[k + j + 3 * m_4]);
                         float32x4_t A3_im = vld1q_f32(&im[k + j + 3 * m_4]);
                         
@@ -441,8 +442,10 @@ public:
                         Complex w3 = twiddles[3 * j * step];     
 
                         Complex a0(re[k + j], im[k + j]);
-                        Complex a1(re[k + j + m_4], im[k + j + m_4]); a1 *= w1;
-                        Complex a2(re[k + j + 2 * m_4], im[k + j + 2 * m_4]); a2 *= w2;
+                        // [FIX]: Swap a1 and a2 loads here as well!
+                        Complex a1(re[k + j + 2 * m_4], im[k + j + 2 * m_4]); a1 *= w1;
+                        Complex a2(re[k + j + m_4], im[k + j + m_4]); a2 *= w2;
+
                         Complex a3(re[k + j + 3 * m_4], im[k + j + 3 * m_4]); a3 *= w3;
 
                         Complex t0 = a0 + a2;
