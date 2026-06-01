@@ -1,23 +1,21 @@
 /*
-  ==============================================================================
-    v1.0.0
-    intrinsic optimizd radix-4
-    v1.0.1
-    intrinsic optimized radix-2 and radix-4(better)
-  
-    v1.0.2
-    out of place fft using __restrict and manual loop unrolling 
-    bit reversal precompute switched to bit reversal done with __builtin_bitreverse32
+v1.0.0
+intrinsic optimizd radix-4
+v1.0.1
+intrinsic optimized radix-2 and radix-4(better)
 
-    v1.1.1
-    Switched to split-complex (SoA) and avoid vld2/vst2 in the hot loop.
+v1.0.2
+out of place fft using __restrict and manual loop unrolling 
+bit reversal precompute switched to bit reversal done with __builtin_bitreverse32
 
-    v1.1.2
-    removed dead vars
-    alignedAllocator
-    std::assume_aligned
+v1.1.1
+Switched to split-complex (SoA) and avoid vld2/vst2 in the hot loop.
 
-  ==============================================================================
+v1.1.2
+removed dead vars
+alignedAllocator
+std::assume_aligned
+==============================================================================
 */
 #pragma once
 // ARM64 NEON Intrinsics Header
@@ -32,11 +30,9 @@
 #include <new>
 #include <limits>
 #include <memory>
-
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
-
 // =============================================================================
 // 64-BYTE ALIGNED ALLOCATOR (Cache-Line Optimization)
 // Prevents cache-line splits during SIMD loads/stores in the hot loop.
@@ -49,38 +45,35 @@ public:
     using difference_type = std::ptrdiff_t;
     using propagate_on_container_move_assignment = std::true_type;
     using is_always_equal = std::true_type;
-    
     AlignedAllocator() noexcept = default;
-    
+
     template <typename U>
     AlignedAllocator(const AlignedAllocator<U, Alignment>&) noexcept {}
-    
+
     T* allocate(size_type n) {
         if (n > std::numeric_limits<size_type>::max() / sizeof(T)) throw std::bad_alloc();
         size_type size = n * sizeof(T);
         void* ptr = nullptr;
-#if defined(_MSC_VER)
-        ptr = _aligned_malloc(size, Alignment);
-        if (!ptr) throw std::bad_alloc();
-#else
-        if (posix_memalign(&ptr, Alignment, size) != 0) throw std::bad_alloc();
-#endif
-        return static_cast<T*>(ptr);
+    #if defined(_MSC_VER)
+    ptr = _aligned_malloc(size, Alignment);
+    if (!ptr) throw std::bad_alloc();
+    #else
+    if (posix_memalign(&ptr, Alignment, size) != 0) throw std::bad_alloc();
+    #endif
+    return static_cast<T*>(ptr);
     }
-    
     void deallocate(T* ptr, size_type) noexcept {
-#if defined(_MSC_VER)
-        _aligned_free(ptr);
-#else
-        free(ptr);
-#endif
+    #if defined(_MSC_VER)
+    _aligned_free(ptr);
+    #else
+    free(ptr);
+    #endif
     }
-    
     template <typename U>
     struct rebind {
         using other = AlignedAllocator<U, Alignment>;
     };
-    
+
     bool operator==(const AlignedAllocator&) const noexcept { return true; }
     bool operator!=(const AlignedAllocator&) const noexcept { return false; }
 };
@@ -88,7 +81,6 @@ public:
 class NeonFFT {
 public:
     using Complex = std::complex<float>;
-    
     // Helper struct to guarantee 64B aligned input/output buffers for the user
     struct AlignedBuffer {
         std::vector<float, AlignedAllocator<float>> re;
@@ -109,15 +101,18 @@ public:
             twiddles[i] = Complex((float)std::cos(phase), (float)std::sin(phase));
         }
 
-        // =================================================================  
+        // =================== ==============================================  
         // TWIDDLE PRE-PACKING (Eliminates the SIMD Memory Wall)
-        // Packed in Split-Complex (SoA) format: [Re0, Re1, Re2, Re3, Im0, Im1, Im2, Im3]
+        // Packed in Split-Complex (SoA) format: [Re0, Re1, Re2, Re3, Im0,  Im1, Im2, Im3]
         // v1.1.2 Now using AlignedAllocator to guarantee 64B cache-line alignment
         // 
         // =================================================================  
         packed_twiddles.resize(order + 1);
         
-        for (int s = 2; s <= order; s += 2) {
+        // FIX 2: Start at 3 if the order is odd, otherwise start at 2
+        int start_s = (order % 2 != 0) ? 3 : 2;
+        
+        for (int s = start_s; s <= order; s += 2) {
             int m = 1 << s;
             int m_4 = m >> 2;
             int step = fftSize / m;
@@ -157,12 +152,12 @@ public:
 
     // =================================================================
     // BIT-REVERSAL PRECOMPUTATION
-    // =================================================================
+    // ======================== =========================================
     // v1.0.2 现在替换为  __builtin_bitreverse32
 
     // =====================================================================
     // AOS WRAPPERS 
-    //      (For compatibility with std::complex<float> benchmarks)
+    //       (For compatibility with std::complex<float> benchmarks)
     // Uses mutable temp buffers + NEON vld2/vst2 降低 conversion overhead
     // =====================================================================
     void performForward(const Complex* __restrict__ input, Complex* __restrict__ output) const {
@@ -236,18 +231,17 @@ public:
     // =====================================================================
     void performForward(const float* __restrict__ in_re, const float* __restrict__ in_im,
                         float* __restrict__ out_re, float* __restrict__ out_im) const {
-#if defined(__GNUC__) || defined(__clang__)
-        in_re  = (const float*)__builtin_assume_aligned(in_re, 64);
-        in_im  = (const float*)__builtin_assume_aligned(in_im, 64);
-        out_re = (float*)__builtin_assume_aligned(out_re, 64);
-        out_im = (float*)__builtin_assume_aligned(out_im, 64);
-#endif
-
+    #if defined(__GNUC__) || defined(__clang__)
+    in_re  = (const float*)__builtin_assume_aligned(in_re, 64);
+    in_im  = (const float*)__builtin_assume_aligned(in_im, 64);
+    out_re = (float*)__builtin_assume_aligned(out_re, 64);
+    out_im = (float*)__builtin_assume_aligned(out_im, 64);
+    #endif
         if (in_re == out_re && in_im == out_im) {
             // Fallback for strict in-place calls
             bitReverse(out_re, out_im, fftSize);
         } else {
-            // Out-of-place Bit-Reversal using ARM64 `rbit` intrinsic
+            // Out-of-place Bit-Reversal using ARM64 `rbit`  intrinsic
             int i = 0;
             for (; i <= fftSize - 4; i += 4) {
                 uint32_t rev0 = __builtin_bitreverse32(i) >> (32 - order);
@@ -278,18 +272,17 @@ public:
 
     // =====================================================================
     // IN-PLACE SIMD BUTTERFLY MATH
-    // =====================================================================
+    // ========================================= ============================
     void performForward(float* __restrict__ re, float* __restrict__ im) const {
-#if defined(__GNUC__) || defined(__clang__)
-        re = (float*)__builtin_assume_aligned(re, 64);
-        im = (float*)__builtin_assume_aligned(im, 64);
-#endif
-
+    #if defined(__GNUC__) || defined(__clang__)
+    re = (float*)__builtin_assume_aligned(re, 64);
+    im = (float*)__builtin_assume_aligned(im, 64);
+    #endif
         int s = 2;
         
         // =====================================================================
         // RADIX-2 STAGE FOR ODD ORDERS (v1.0.2 now vectorized)
-        // =====================================================================
+        // ================ =====================================================
         if (order % 2 != 0) {
             // Radix-2时, m=2, half_m=1. The twiddle factor is always twiddles[0] = (1.0, 0.0).
             // 无须复数乘法
@@ -337,10 +330,13 @@ public:
                 re[k] = u_re + t_re; im[k] = u_im + t_im;
                 re[k+1] = u_re - t_re; im[k+1] = u_im - t_im;
             }
+            
+            // FIX 1: Advance to the correct starting stage for Radix-4
+            s = 3; 
         }
         // =======================================================================
         // Radix-4 stages
-        //===================================================
+        //======== ===========================================
         for (; s <= order; s += 2) {
             int m = 1 << s;
             int m_4 = m >> 2; 
@@ -348,21 +344,20 @@ public:
             if (m_4 >= 4) {
                 // =========================================================
                 // NEON VECTORIZED PATH
-                // =========================================================
+                // ================================================ =========
                 const float* __restrict__ tw_ptr_base = packed_twiddles[s].data();
-#if __cplusplus >= 202002L && defined(__cpp_lib_assume_aligned)
-                tw_ptr_base = std::assume_aligned<64>(tw_ptr_base);
-#elif defined(__GNUC__) || defined(__clang__)
-                tw_ptr_base = static_cast<const float*>(__builtin_assume_aligned(tw_ptr_base, 64));
-#endif
-                
+    #if __cplusplus >= 202002L && defined(__cpp_lib_assume_aligned)
+    tw_ptr_base = std::assume_aligned<64>(tw_ptr_base);
+    #elif defined(__GNUC__) || defined(__clang__)
+    tw_ptr_base = static_cast<const float*>(__builtin_assume_aligned(tw_ptr_base, 64));
+    #endif
                 for (int k = 0; k < fftSize; k += m) {
                     const float* __restrict__ tw_ptr = tw_ptr_base;
                     
                     for (int j = 0; j < m_4; j += 4) {
                         // Note: Software prefetching (__builtin_prefetch) 故意omitted
                         // 在后续large fft测试中加上
-                        // 目前n=1024, 整体能放在L1 cache中
+                        // 目前n=1024, 整体能放在L1  cache中
 
                         // 1. LOAD DATA (SoA layout avoids vld2 completely)
                         float32x4_t A0_re = vld1q_f32(&re[k + j]);
@@ -386,7 +381,7 @@ public:
                         float32x4_t W3_im = vld1q_f32(tw_ptr + 20);
                         tw_ptr += 24;
 
-                        // 3. COMPLEX MULTIPLICATION (FMA)
+                        // 3.  COMPLEX MULTIPLICATION (FMA)
                         float32x4_t a1_re = vmulq_f32(W1_re, A1_re);
                         a1_re = vfmsq_f32(a1_re, W1_im, A1_im);
                         float32x4_t a1_im = vmulq_f32(W1_re, A1_im);
@@ -436,14 +431,14 @@ public:
                 }
             } else {
                 // =========================================================
-                // 后备scalar fft (For m_4 < 4) 用不到
+                // 后备scalar fft  (For m_4 < 4) 用不到
                 // =========================================================
                 int step = fftSize / m;     // 不放在hot loop中
                 for (int k = 0; k < fftSize; k += m) {
                     for (int j = 0; j < m_4; ++j) {
                         Complex w1 = twiddles[j * step];
                         Complex w2 = twiddles[2 * j * step];
-                        Complex w3 = twiddles[3 * j * step];    
+                        Complex w3 = twiddles[3 * j * step];     
 
                         Complex a0(re[k + j], im[k + j]);
                         Complex a1(re[k + j + m_4], im[k + j + m_4]); a1 *= w1;
@@ -469,14 +464,12 @@ public:
             }
         }
     }
-
 private:
     int order;
     int fftSize;
     std::vector<Complex> twiddles;
     // Applied AlignedAllocator to twiddle tables to prevent cache-line splits
     std::vector<std::vector<float, AlignedAllocator<float>>> packed_twiddles;
-
     // Mutable temp buffers for AoS <-> SoA conversion wrappers
     // Avoids allocation overhead in the benchmark hot loop
     mutable std::vector<float, AlignedAllocator<float>> temp_in_re;
