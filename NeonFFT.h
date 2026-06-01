@@ -1,3 +1,20 @@
+/*
+  ==============================================================================
+
+    v1.0.0
+    intrinsic optimizd radix-4
+    v1.0.1
+    intrinsic optimized radix-2 and radix-4(better)
+
+    v1.0.2
+    out of place fft using __restrict and manual loop unrolling 
+    bit reversal precompute switched to bit reversal done with __builtin_bitreverse32
+
+    v1.0.3 fixed CRITICAL
+
+  ==============================================================================
+*/
+
 #pragma once
 // ARM64 NEON Intrinsics Header
 #include <arm_neon.h>
@@ -166,6 +183,9 @@ public:
                 data[k] = u + t;
                 data[k + 1] = u - t;
             }
+
+            s=3;// FIX: Explicitly advance s to 3 so the next loop
+                // starts at the first true Radix-4 stage (m=4)
         }
 
         // Radix-4 stages
@@ -190,9 +210,10 @@ public:
                         // 目前n=1024, 整体能放在L1 cache中
 
                         // 1. LOAD & DE-INTERLEAVE DATA
-                        float32x4x2_t A0 = vld2q_f32(&fdata[2 * (k + j)]);
-                        float32x4x2_t A1 = vld2q_f32(&fdata[2 * (k + j + m_4)]);
-                        float32x4x2_t A2 = vld2q_f32(&fdata[2 * (k + j + 2 * m_4)]);
+                            // [FIX] Swap A1 and A2 loads to compensate for Radix-2 bit-reversal
+                        float32x4x2_t A1 = vld2q_f32(&fdata[2 * (k + j + 2 * m_4)]); // Load from 2 * m_4
+                        float32x4x2_t A2 = vld2q_f32(&fdata[2 * (k + j + m_4)]);     // Load from m_4
+
                         float32x4x2_t A3 = vld2q_f32(&fdata[2 * (k + j + 3 * m_4)]);
                         
                         // 2. LOAD PRE-PACKED TWIDDLES
@@ -264,8 +285,10 @@ public:
                         Complex w3 = twiddles[3 * j * step];   
 
                         Complex a0 = data[k + j];
-                        Complex a1 = data[k + j + m_4] * w1;
-                        Complex a2 = data[k + j + 2 * m_4] * w2;
+                        // [FIX] Swap a1 and a2 loads here too
+                        Complex a1 = data[k + j + 2 * m_4] * w1;
+                        Complex a2 = data[k + j + m_4] * w2;
+
                         Complex a3 = data[k + j + 3 * m_4] * w3;
 
                         Complex t0 = a0 + a2;
