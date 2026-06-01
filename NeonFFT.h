@@ -1,3 +1,20 @@
+/*
+  ==============================================================================
+
+    v1.0.0
+    intrinsic optimizd radix-4
+    v1.0.1
+    intrinsic optimized radix-2 and radix-4(better)
+
+    v1.0.2
+    out of place fft using __restrict and manual loop unrolling 
+    bit reversal precompute switched to bit reversal done with __builtin_bitreverse32
+
+    v1.0.3 fixed CRITICAL logic error mismatch between bitreverse and radix-4 butterfly
+
+  ==============================================================================
+*/
+
 #pragma once
 // ARM64 NEON Intrinsics Header
 #include <arm_neon.h>
@@ -73,11 +90,11 @@ public:
         // =================================================================
         // BIT-REVERSAL PRECOMPUTATION
         // =================================================================
-        //now replaced with __builtin_bitreverse32
+        //           现在替换为  __builtin_bitreverse32
     }
 
     // =====================================================================
-    // OUT-OF-PLACE FFT (With __restrict__ and Manual Loop Unrolling)
+    // OUT-OF-PLACE FFT (新增 __restrict__ and Manual Loop Unrolling)
     // =====================================================================
     void performForward(const Complex* __restrict__ input, Complex* __restrict__ output) const {
         if (input == output) {
@@ -120,11 +137,11 @@ public:
         int s = 2;
         
         // =====================================================================
-        // RADIX-2 STAGE FOR ODD ORDERS (VECTORIZED)
+        // RADIX-2 STAGE FOR ODD ORDERS (   v1.0.2 now vectorized)
         // =====================================================================
         if (order % 2 != 0) {
-            // For Radix-2, m=2, half_m=1. The twiddle factor is always twiddles[0] = (1.0, 0.0).
-            // Thus, no complex multiplication is needed, just addition and subtraction.
+            // Radix-2时, m=2, half_m=1. The twiddle factor is always twiddles[0] = (1.0, 0.0).
+            // 无须复数乘法
             
             int k = 0;
             // Vectorized path: process 8 complex numbers (4 butterflies) per iteration
@@ -159,13 +176,16 @@ public:
                 vst2q_f32(&fdata[2 * k + 8], R1);
             }
             
-            // Scalar fallback (Theoretically unreachable since fftSize is a power of 2 >= 8)
+            // 后备scalar fft   用不到
             for (; k < fftSize; k += 2) {
                 Complex u = data[k];
                 Complex t = data[k + 1];
                 data[k] = u + t;
                 data[k + 1] = u - t;
             }
+
+            s=3;// FIX: Explicitly advance s to 3 so the next loop
+                // starts at the first true Radix-4 stage (m=4)
         }
 
         // Radix-4 stages
@@ -184,15 +204,18 @@ public:
                     const float* __restrict__ tw_ptr = tw_ptr_base;
                     
                     for (int j = 0; j < m_4; j += 4) {
-                        // Note: Software prefetching (__builtin_prefetch) is intentionally 
-                        // omitted here. For N=1024 (8KB), the entire dataset fits in L1 cache,
-                        // and Apple Silicon's hardware prefetcher is vastly superior.
-                        // Adding software prefetches here would waste instruction decode bandwidth.
+
+                        // Note: Software prefetching (__builtin_prefetch) 故意omitted
+                        // 在后续large fft测试中加上
+                        // 目前n=1024, 整体能放在L1 cache中
 
                         // 1. LOAD & DE-INTERLEAVE DATA
+                        
                         float32x4x2_t A0 = vld2q_f32(&fdata[2 * (k + j)]);
-                        float32x4x2_t A1 = vld2q_f32(&fdata[2 * (k + j + m_4)]);
-                        float32x4x2_t A2 = vld2q_f32(&fdata[2 * (k + j + 2 * m_4)]);
+                            // [FIX] Swap A1 and A2 loads to compensate for Radix-2 bit-reversal
+                        float32x4x2_t A1 = vld2q_f32(&fdata[2 * (k + j + 2 * m_4)]); // Load from 2 * m_4
+                        float32x4x2_t A2 = vld2q_f32(&fdata[2 * (k + j + m_4)]);     // Load from m_4
+
                         float32x4x2_t A3 = vld2q_f32(&fdata[2 * (k + j + 3 * m_4)]);
                         
                         // 2. LOAD PRE-PACKED TWIDDLES
@@ -255,7 +278,7 @@ public:
                 }
             } else {
                 // =========================================================
-                // SCALAR FALLBACK (For m_4 < 4)
+                // 后备scalar fft (For m_4 < 4) 用不到
                 // =========================================================
                 for (int k = 0; k < fftSize; k += m) {
                     for (int j = 0; j < m_4; ++j) {
@@ -264,8 +287,10 @@ public:
                         Complex w3 = twiddles[3 * j * step];   
 
                         Complex a0 = data[k + j];
-                        Complex a1 = data[k + j + m_4] * w1;
-                        Complex a2 = data[k + j + 2 * m_4] * w2;
+                        // [FIX] Swap a1 and a2 loads here too
+                        Complex a1 = data[k + j + 2 * m_4] * w1;
+                        Complex a2 = data[k + j + m_4] * w2;
+
                         Complex a3 = data[k + j + 3 * m_4] * w3;
 
                         Complex t0 = a0 + a2;
@@ -290,7 +315,7 @@ private:
     std::vector<Complex> twiddles;
     std::vector<std::vector<float>> packed_twiddles;
 
-    // Kept for safety, though the Out-of-Place path bypasses it
+    // 后备bit reverse, though the Out-of-Place path bypasses it
     void bitReverse(Complex* data, int n) const {
         for (int i = 0; i < n; ++i) {
             int j = __builtin_bitreverse32(i) >> (32 - order);
