@@ -112,7 +112,8 @@ public:
         // =================================================================  
         // TWIDDLE PRE-PACKING (Eliminates the SIMD Memory Wall)
         // Packed in Split-Complex (SoA) format: [Re0, Re1, Re2, Re3, Im0, Im1, Im2, Im3]
-        // Now using AlignedAllocator to guarantee 64B cache-line alignment
+        // v1.1.2 Now using AlignedAllocator to guarantee 64B cache-line alignment
+        // 
         // =================================================================  
         packed_twiddles.resize(order + 1);
         
@@ -157,11 +158,81 @@ public:
     // =================================================================
     // BIT-REVERSAL PRECOMPUTATION
     // =================================================================
-    //           现在替换为  __builtin_bitreverse32
+    // v1.0.2 现在替换为  __builtin_bitreverse32
 
     // =====================================================================
-    // OUT-OF-PLACE FFT (新增 __restrict__ and Manual Loop Unrolling)
-    // (Switched to Split-Complex / SoA Interface)
+    // AOS WRAPPERS 
+    //      (For compatibility with std::complex<float> benchmarks)
+    // Uses mutable temp buffers + NEON vld2/vst2 降低 conversion overhead
+    // =====================================================================
+    void performForward(const Complex* __restrict__ input, Complex* __restrict__ output) const {
+        if (temp_in_re.size() != static_cast<size_t>(fftSize)) {
+            temp_in_re.resize(fftSize);
+            temp_in_im.resize(fftSize);
+            temp_out_re.resize(fftSize);
+            temp_out_im.resize(fftSize);
+        }
+        
+        const float* in_ptr = reinterpret_cast<const float*>(input);
+        float* out_re_ptr = temp_in_re.data();
+        float* out_im_ptr = temp_in_im.data();
+        
+        // AoS -> SoA using NEON vld2
+        for (int i = 0; i < fftSize; i += 4) {
+            float32x4x2_t A = vld2q_f32(in_ptr + i * 2);
+            vst1q_f32(out_re_ptr + i, A.val[0]);
+            vst1q_f32(out_im_ptr + i, A.val[1]);
+        }
+        
+        performForward(temp_in_re.data(), temp_in_im.data(), temp_out_re.data(), temp_out_im.data());
+        
+        float* out_ptr = reinterpret_cast<float*>(output);
+        const float* in_re_ptr = temp_out_re.data();
+        const float* in_im_ptr = temp_out_im.data();
+        
+        // SoA -> AoS using NEON vst2
+        for (int i = 0; i < fftSize; i += 4) {
+            float32x4_t re = vld1q_f32(in_re_ptr + i);
+            float32x4_t im = vld1q_f32(in_im_ptr + i);
+            float32x4x2_t A;
+            A.val[0] = re;
+            A.val[1] = im;
+            vst2q_f32(out_ptr + i * 2, A);
+        }
+    }
+
+    void performForward(Complex* __restrict__ data) const {
+        if (temp_in_re.size() != static_cast<size_t>(fftSize)) {
+            temp_in_re.resize(fftSize);
+            temp_in_im.resize(fftSize);
+        }
+        
+        float* data_ptr = reinterpret_cast<float*>(data);
+        float* out_re_ptr = temp_in_re.data();
+        float* out_im_ptr = temp_in_im.data();
+        
+        for (int i = 0; i < fftSize; i += 4) {
+            float32x4x2_t A = vld2q_f32(data_ptr + i * 2);
+            vst1q_f32(out_re_ptr + i, A.val[0]);
+            vst1q_f32(out_im_ptr + i, A.val[1]);
+        }
+        
+        performForward(temp_in_re.data(), temp_in_im.data());
+        
+        for (int i = 0; i < fftSize; i += 4) {
+            float32x4_t re = vld1q_f32(out_re_ptr + i);
+            float32x4_t im = vld1q_f32(out_im_ptr + i);
+            float32x4x2_t A;
+            A.val[0] = re;
+            A.val[1] = im;
+            vst2q_f32(data_ptr + i * 2, A);
+        }
+    }
+
+    // =====================================================================
+    // OUT-OF-PLACE FFT 
+    // v1.0.2  (新增 __restrict__ and Manual Loop Unrolling)
+    // v1.1.0  (Switched to Split-Complex / SoA Interface)
     // =====================================================================
     void performForward(const float* __restrict__ in_re, const float* __restrict__ in_im,
                         float* __restrict__ out_re, float* __restrict__ out_im) const {
@@ -267,8 +338,9 @@ public:
                 re[k+1] = u_re - t_re; im[k+1] = u_im - t_im;
             }
         }
-
+        // =======================================================================
         // Radix-4 stages
+        //===================================================
         for (; s <= order; s += 2) {
             int m = 1 << s;
             int m_4 = m >> 2; 
@@ -366,7 +438,7 @@ public:
                 // =========================================================
                 // 后备scalar fft (For m_4 < 4) 用不到
                 // =========================================================
-                int step = fftSize / m;
+                int step = fftSize / m;     // 不放在hot loop中
                 for (int k = 0; k < fftSize; k += m) {
                     for (int j = 0; j < m_4; ++j) {
                         Complex w1 = twiddles[j * step];
@@ -404,6 +476,13 @@ private:
     std::vector<Complex> twiddles;
     // Applied AlignedAllocator to twiddle tables to prevent cache-line splits
     std::vector<std::vector<float, AlignedAllocator<float>>> packed_twiddles;
+
+    // Mutable temp buffers for AoS <-> SoA conversion wrappers
+    // Avoids allocation overhead in the benchmark hot loop
+    mutable std::vector<float, AlignedAllocator<float>> temp_in_re;
+    mutable std::vector<float, AlignedAllocator<float>> temp_in_im;
+    mutable std::vector<float, AlignedAllocator<float>> temp_out_re;
+    mutable std::vector<float, AlignedAllocator<float>> temp_out_im;
 
     // 后备bit reverse, though the Out-of-Place path bypasses it
     void bitReverse(float* re, float* im, int n) const {
