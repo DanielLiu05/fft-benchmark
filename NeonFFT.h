@@ -10,7 +10,7 @@
     out of place fft using __restrict and manual loop unrolling 
     bit reversal precompute switched to bit reversal done with __builtin_bitreverse32
 
-    v1.0.3 fixed CRITICAL
+    v1.0.3 fixed CRITICAL logic error mismatch between bitreverse and radix-4 butterfly
 
   ==============================================================================
 */
@@ -210,6 +210,8 @@ public:
                         // 目前n=1024, 整体能放在L1 cache中
 
                         // 1. LOAD & DE-INTERLEAVE DATA
+                        
+                        float32x4x2_t A0 = vld2q_f32(&fdata[2 * (k + j)]);
                             // [FIX] Swap A1 and A2 loads to compensate for Radix-2 bit-reversal
                         float32x4x2_t A1 = vld2q_f32(&fdata[2 * (k + j + 2 * m_4)]); // Load from 2 * m_4
                         float32x4x2_t A2 = vld2q_f32(&fdata[2 * (k + j + m_4)]);     // Load from m_4
