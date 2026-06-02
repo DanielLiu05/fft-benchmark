@@ -162,115 +162,61 @@ void runBenchmark(const std::string& engineName, int order, int iterations, cons
 // Main Entry Point
 // ============================================================================
 int main() {
-    int order = 10;
-    int iterations = 10000; 
-    size_t fftSize = 1 << order;
-
-    std::cout << "================================================================\n";
-    std::cout << " FFT Benchmark & Verification: Size = " << fftSize << " samples\n";
-    std::cout << " Iterations per engine: " << iterations << "\n";
-    std::cout << "================================================================\n\n";
-
-    // Allocate and fill input
-    std::vector<std::complex<float>> inputBuffer(fftSize);
-    std::vector<std::complex<float>> trueOutput(fftSize);
+    // The Scientific Test Matrix
+    std::vector<int> test_orders = {10, 16, 18, 20};
     
-    for (size_t i = 0; i < fftSize; ++i) {
-        float val = std::sin(2.0f * M_PI * 440.0f * i / 44100.0f);
-        inputBuffer[i] = {val, 0.0f};
+    for (int order : test_orders) {
+        // Dynamic Iteration Scaling
+        int iterations = 10000;
+        if (order == 16) iterations = 1000;
+        if (order == 18) iterations = 500;
+        if (order == 20) iterations = 200;
+
+        size_t fftSize = 1 << order;
+        
+        std::cout << "================================================================\n";
+        std::cout << " FFT Benchmark & Verification: Size = " << fftSize << " samples\n";
+        std::cout << " Iterations per engine: " << iterations << "\n";
+        std::cout << "================================================================\n";
+
+        // Allocate and fill input
+        std::vector<std::complex<float>> inputBuffer(fftSize);
+        std::vector<std::complex<float>> trueOutput(fftSize);
+        for (size_t i = 0; i < fftSize; ++i) {
+            float val = std::sin(2.0f * M_PI * 440.0f * i / 44100.0f);
+            inputBuffer[i] = {val, 0.0f};
+        }
+
+        // TRAP PREVENTION
+        if (order <= 12) {
+            std::cout << "Computing Ground Truth (Naive O(N^2) DFT)...\n";
+            auto startDFT = std::chrono::high_resolution_clock::now();
+            computeGroundTruth(inputBuffer.data(), trueOutput.data(), fftSize);
+            auto endDFT = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> dftMs = endDFT - startDFT;
+            std::cout << "Ground Truth computed in " << std::fixed << std::setprecision(2) << dftMs.count() << " ms.\n";
+        } else {
+            std::cout << "Skipping Naive DFT ,ignore verification errors.\n";
+            std::copy(inputBuffer.begin(), inputBuffer.end(), trueOutput.begin()); 
+        }
+
+        // Run the engines
+        runBenchmark<ScalarFFT>("Scalar Fallback", order, iterations, trueOutput.data());
+        runBenchmark<NeonFFT>("my Custom ARM NEON", order, iterations, trueOutput.data());
+        runBenchmark<SixStepFFT_MT>("my sixstep algorithm optimization", order, iterations, trueOutput.data()); 
+        
+        runBenchmark<AppleFFT>("Apple vDSP", order, iterations, trueOutput.data());
+        
+        std::cout << "\n";
+        
+        // Thermal cooldown between large sizes
+        if (order >= 16) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
     }
-
-    std::cout << "Computing Ground Truth (Naive O(N^2) DFT in double precision)...\n";
-    auto startDFT = std::chrono::high_resolution_clock::now();
-    computeGroundTruth(inputBuffer.data(), trueOutput.data(), fftSize);
-    auto endDFT = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> dftMs = endDFT - startDFT;
-    std::cout << "Ground Truth computed in " << std::fixed << std::setprecision(2) << dftMs.count() << " ms.\n\n";
-
-    runBenchmark<ScalarFFT>("Scalar Fallback", order, iterations, trueOutput.data());
-    runBenchmark<NeonFFT>("my ARM NEON optimizations", order, iterations, trueOutput.data());
-    runBenchmark<SixStepFFT_MT>("my sixstep algorithm optimization", order, iterations, trueOutput.data(),);
-    runBenchmark<AppleFFT>("Apple vDSP", order, iterations, trueOutput.data());
-    
-    //=================================================================================================================
-    order = 16;
-    iterations = 1000; 
-    size_t fftSize = 1 << order;
-
-    std::cout << "================================================================\n";
-    std::cout << " FFT Benchmark & Verification: Size = " << fftSize << " samples\n";
-    std::cout << " Iterations per engine: " << iterations << "\n";
-    std::cout << "================================================================\n\n";
-
-    // Allocate and fill input
-    std::vector<std::complex<float>> inputBuffer(fftSize);
-    std::vector<std::complex<float>> trueOutput(fftSize);
-    
-    for (size_t i = 0; i < fftSize; ++i) {
-        float val = std::sin(2.0f * M_PI * 440.0f * i / 44100.0f);
-        inputBuffer[i] = {val, 0.0f};
-    }
-
-    runBenchmark<ScalarFFT>("Scalar Fallback", order, iterations, trueOutput.data());
-    runBenchmark<NeonFFT>("MY Custom ARM NEON", order, iterations, trueOutput.data());
-    runBenchmark<SixStepFFT_MT>("my sixstep algorithm optimization",order,iterations, trueOutput.data(),);
-    runBenchmark<AppleFFT>("Apple vDSP", order, iterations, trueOutput.data());
-
-    //=================================================================================================================
-
-    //=================================================================================================================
-    order = 18;
-    iterations = 500; 
-    fftSize = 1 << order;
-
-    std::cout << "================================================================\n";
-    std::cout << " FFT Benchmark & Verification: Size = " << fftSize << " samples\n";
-    std::cout << " Iterations per engine: " << iterations << "\n";
-    std::cout << "================================================================\n\n";
-
-    // Allocate and fill input
-    std::vector<std::complex<float>> inputBuffer(fftSize);
-    std::vector<std::complex<float>> trueOutput(fftSize);
-    
-    for (size_t i = 0; i < fftSize; ++i) {
-        float val = std::sin(2.0f * M_PI * 440.0f * i / 44100.0f);
-        inputBuffer[i] = {val, 0.0f};
-    }
-
-    runBenchmark<ScalarFFT>("Scalar Fallback", order, iterations, trueOutput.data());
-    runBenchmark<NeonFFT>("MY Custom ARM NEON", order, iterations, trueOutput.data());
-    runBenchmark<SixStepFFT_MT>("my sixstep algorithm optimization",order,iterations, trueOutput.data(),);
-    runBenchmark<AppleFFT>("Apple vDSP", order, iterations, trueOutput.data());
-
-    //=================================================================================================================
-    order = 20;
-    order = 20;
-    iterations = 200; 
-    fftSize = 1 << order;
-
-    std::cout << "================================================================\n";
-    std::cout << " FFT Benchmark & Verification: Size = " << fftSize << " samples\n";
-    std::cout << " Iterations per engine: " << iterations << "\n";
-    std::cout << "================================================================\n\n";
-
-    // Allocate and fill input
-    std::vector<std::complex<float>> inputBuffer(fftSize);
-    std::vector<std::complex<float>> trueOutput(fftSize);
-    
-    for (size_t i = 0; i < fftSize; ++i) {
-        float val = std::sin(2.0f * M_PI * 440.0f * i / 44100.0f);
-        inputBuffer[i] = {val, 0.0f};
-    }
-
-    runBenchmark<ScalarFFT>("Scalar Fallback", order, iterations, trueOutput.data());
-    runBenchmark<NeonFFT>("MY Custom ARM NEON", order, iterations, trueOutput.data());
-    runBenchmark<SixStepFFT_MT>("my sixstep algorithm optimization",order,iterations, trueOutput.data(),);
-    runBenchmark<AppleFFT>("Apple vDSP", order, iterations, trueOutput.data());
-//============================================================================================================
 
     std::cout << "================================================================\n";
     std::cout << "Note: Ensure compiled with -O3 -march=native -ffast-math\n";
     std::cout << "================================================================\n";
-    
     return 0;
 }
