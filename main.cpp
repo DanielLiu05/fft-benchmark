@@ -71,7 +71,7 @@ void runBenchmark(const std::string& engineName, int order, int iterations, cons
 
         // Warm-up
         // now dynamic
-        int warmup_iters = (order >= 18) ? 50 : ((order >= 15) ? 200 : 1000);
+        int warmup_iters = (order >= 22) ? 10 : (order >= 18) ? 50 : ((order >= 15) ? 200 : 1000);
         for (int i = 0; i < warmup_iters; ++i) {
             engine.performForward(inputBuffer, outputBuffer);
         }
@@ -164,7 +164,7 @@ void runBenchmark(const std::string& engineName, int order, int iterations, cons
 // ============================================================================
 int main() {
     // The Scientific Test Matrix
-    std::vector<int> test_orders = {10, 16, 18, 20};
+    std::vector<int> test_orders = {10, 16, 18, 20, 22, 24, 26};
     
     for (int order : test_orders) {
         // Dynamic Iteration Scaling
@@ -172,6 +172,9 @@ int main() {
         if (order == 16) iterations = 1000;
         if (order == 18) iterations = 500;
         if (order == 20) iterations = 200;
+        if (order == 22) iterations = 80;
+        if (order == 24) iterations = 20;
+        if (order == 26) iterations = 5;
 
         size_t fftSize = 1 << order;
         
@@ -211,8 +214,11 @@ int main() {
         std::cout << "\n";
         
         // Thermal cooldown between large sizes
-        if (order >= 16) {
+        if (order >= 16 && order <=20) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        else if(order >=22){
+            std::this_thread::sleep_for(std::chrono::seconds(3))
         }
     }
 
