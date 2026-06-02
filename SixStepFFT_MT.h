@@ -95,10 +95,9 @@ public:
         // STEP 1: Map 1D AoS Input to 2D Matrix + Unpack
         // FIX: Sequential Read (Hardware Prefetcher friendly)
         // ---------------------------------------------------------
-        dispatch_apply(N2, DISPATCH_APPLY_AUTO, ^(size_t c) {
-            int base_n = c * N1;
-            for (int r = 0; r < N1; ++r) {
-                int idx = (base_n + r) * 2;
+        dispatch_apply(N1, DISPATCH_APPLY_AUTO, ^(size_t r) {
+            for (int c = 0; c < N2; ++c) {
+                int idx = (r * N2 + c) * 2;
                 mat1_re[r * stride_N2 + c] = in_ptr[idx];
                 mat1_im[r * stride_N2 + c] = in_ptr[idx + 1];
             }
@@ -246,11 +245,10 @@ public:
                         float* out_re, float* out_im) {
         
         // STEP 1: Sequential Read
-        dispatch_apply(N2, DISPATCH_APPLY_AUTO, ^(size_t c) {
-            int base_n = c * N1;
-            for (int r = 0; r < N1; ++r) {
-                mat1_re[r * stride_N2 + c] = in_re[base_n + r];
-                mat1_im[r * stride_N2 + c] = in_im[base_n + r];
+        dispatch_apply(N1, DISPATCH_APPLY_AUTO, ^(size_t r) {
+            for (int c = 0; c < N2; ++c) {
+                mat1_re[r * stride_N2 + c] = in_re[r * N2 + c];
+                mat1_im[r * stride_N2 + c] = in_im[r * N2 + c];
             }
         });
 
