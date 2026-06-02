@@ -1,5 +1,6 @@
 #include <iostream>
 #include <chrono>
+#include <thread>
 #include <complex>
 #include <vector>
 #include <cmath>
@@ -211,7 +212,7 @@ int main() {
         
         // Thermal cooldown between large sizes
         if (order >= 16) {
-            std::this_thread::sleep_for(std::chrono::seconds(2));
+            std::this_thread::sleep_for(std::chrono::seconds(1));
         }
     }
 
