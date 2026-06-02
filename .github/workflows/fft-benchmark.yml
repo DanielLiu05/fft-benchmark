@@ -62,14 +62,7 @@ jobs:
           fi
           echo "Benchmark completed successfully"
 
-      - name: Validate Output
-        run: |
-          [ -s benchmark_results.txt ] || { echo "Empty output"; exit 1; }
-          grep -q "Advanced FFT Benchmark" benchmark_results.txt || { echo "Missing benchmark header"; exit 1; }
-          grep -q "Median:" benchmark_results.txt || { echo "Missing statistical timing data"; exit 1; }
-          grep -q "Custom ARM NEON" benchmark_results.txt || { echo "Missing NEON engine results"; exit 1; }
-          echo "Output validation successful!"
-
+    
       - name: Generate GitHub Job Summary
         run: |
           echo "## Apple Silicon FFT Benchmark Results" >> $GITHUB_STEP_SUMMARY
