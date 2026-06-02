@@ -218,7 +218,7 @@ int main() {
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
         else if(order >=22){
-            std::this_thread::sleep_for(std::chrono::seconds(3))
+            std::this_thread::sleep_for(std::chrono::seconds(3));
         }
     }
 
