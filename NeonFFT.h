@@ -355,9 +355,19 @@ public:
                     const float* __restrict__ tw_ptr = tw_ptr_base;
                     
                     for (int j = 0; j < m_4; j += 4) {
-                        // Note: Software prefetching (__builtin_prefetch) 故意omitted
-                        // 在后续large fft测试中加上
-                        // 目前n=1024, 整体能放在L1  cache中
+                        //动态prefetch   待测试  目前用128
+                        
+                        if (m_4 >= 128 && (j + 32) < m_4)
+                        {
+                            __builtin_prefetch(tw_ptr + 24 * 8, 0, 3);//重点prefetch
+
+                            __builtin_prefetch(&re[k+j+32], 0, 1);
+                            __builtin_prefetch(&im[k+j+32], 0, 1);
+
+                            __builtin_prefetch(&re[k+j+32+m_4], 0, 1);
+                            __builtin_prefetch(&im[k+j+32+m_4], 0, 1);
+                        }
+    
 
                         // 1. LOAD DATA (SoA layout avoids vld2 completely)
                         float32x4_t A0_re = vld1q_f32(&re[k + j]);

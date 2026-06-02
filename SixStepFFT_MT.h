@@ -1,3 +1,11 @@
+/*
+v1.0.1 step1 step6 融合解包打包，避免两次全量内存搬运
+
+v1.0.2 Step 4 的 NEON 4x4 块转置 
+        Step 1 & Step 6 的“对称访存”设计
+        Step 1：外层循环 c，内层 r。实现 连续读取 (Sequential Read) 输入数组，跨步写入 2D 矩阵。M1 的硬件预取器 (Hardware Prefetcher) 会疯狂预取输入数据。
+        Step 6：外层循环 r，内层 c。实现 跨步读取 2D 矩阵，连续写入 (Sequential Write) 输出数组。CPU 的 Write-Combining 机制会将连续写入合并，直接打入主存。
+*/
 #pragma once
 #include "NeonFFT.h" // Inherits AlignedAllocator and the thread-safe SoA NeonFFT engine
 #include <dispatch/dispatch.h> // Apple GCD Native Multi-Threading
@@ -7,6 +15,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <iostream>
+#include <arm_neon.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -55,7 +64,7 @@ public:
             throw std::invalid_argument("SixStepFFT requires both orders to be >= 3");
         }
 
-        // Pad strides to multiples of 16 floats (64 bytes) to prevent False Sharing
+        // Pad strides to multiples of 16 floats (64 bytes) to prevent False Sharing & Cache-Line Splits
         stride_N1 = (N1 + 15) & ~15;
         stride_N2 = (N2 + 15) & ~15;
 
@@ -83,8 +92,8 @@ public:
         float* out_ptr = reinterpret_cast<float*>(output);
 
         // ---------------------------------------------------------
-        // STEP 1: Map 1D AoS Input to 2D Matrix (N1 x N2) + Unpack
-        // FIX: Swapped loops for Sequential Read (Hardware Prefetcher friendly)
+        // STEP 1: Map 1D AoS Input to 2D Matrix + Unpack
+        // FIX: Sequential Read (Hardware Prefetcher friendly)
         // ---------------------------------------------------------
         dispatch_apply(N2, DISPATCH_APPLY_AUTO, ^(size_t c) {
             int base_n = c * N1;
@@ -146,7 +155,8 @@ public:
         }
 
         // ---------------------------------------------------------
-        // STEP 4: Cache-Oblivious Tiled Transpose (Multi-Threaded)
+        // STEP 4: Cache-Oblivious Tiled Transpose (NEON 4x4 Block)
+        // Bypasses Store Buffer bottlenecks via register-level transposition
         // ---------------------------------------------------------
         {
             const int TILE = 32; 
@@ -165,10 +175,35 @@ public:
                 int r_end = std::min(r_start + TILE, N1);
                 int c_end = std::min(c_start + TILE, N2);
                 
-                for (int i = r_start; i < r_end; ++i) {
-                    for (int j = c_start; j < c_end; ++j) {
-                        d_re[j * d_stride + i] = s_re[i * s_stride + j];
-                        d_im[j * d_stride + i] = s_im[i * s_stride + j];
+                for (int i = r_start; i < r_end; i += 4) {
+                    for (int j = c_start; j < c_end; j += 4) {
+                        // --- Transpose Real Part ---
+                        float32x4_t row0_re = vld1q_f32(&s_re[i * s_stride + j]);
+                        float32x4_t row1_re = vld1q_f32(&s_re[(i+1) * s_stride + j]);
+                        float32x4_t row2_re = vld1q_f32(&s_re[(i+2) * s_stride + j]);
+                        float32x4_t row3_re = vld1q_f32(&s_re[(i+3) * s_stride + j]);
+
+                        float32x4x2_t t01_re = vtrnq_f32(row0_re, row1_re);
+                        float32x4x2_t t23_re = vtrnq_f32(row2_re, row3_re);
+
+                        vst1q_f32(&d_re[j * d_stride + i], vzip1q_f32(t01_re.val[0], t23_re.val[0]));
+                        vst1q_f32(&d_re[(j+1) * d_stride + i], vzip2q_f32(t01_re.val[0], t23_re.val[0]));
+                        vst1q_f32(&d_re[(j+2) * d_stride + i], vzip1q_f32(t01_re.val[1], t23_re.val[1]));
+                        vst1q_f32(&d_re[(j+3) * d_stride + i], vzip2q_f32(t01_re.val[1], t23_re.val[1]));
+
+                        // --- Transpose Imaginary Part ---
+                        float32x4_t row0_im = vld1q_f32(&s_im[i * s_stride + j]);
+                        float32x4_t row1_im = vld1q_f32(&s_im[(i+1) * s_stride + j]);
+                        float32x4_t row2_im = vld1q_f32(&s_im[(i+2) * s_stride + j]);
+                        float32x4_t row3_im = vld1q_f32(&s_im[(i+3) * s_stride + j]);
+
+                        float32x4x2_t t01_im = vtrnq_f32(row0_im, row1_im);
+                        float32x4x2_t t23_im = vtrnq_f32(row2_im, row3_im);
+
+                        vst1q_f32(&d_im[j * d_stride + i], vzip1q_f32(t01_im.val[0], t23_im.val[0]));
+                        vst1q_f32(&d_im[(j+1) * d_stride + i], vzip2q_f32(t01_im.val[0], t23_im.val[0]));
+                        vst1q_f32(&d_im[(j+2) * d_stride + i], vzip1q_f32(t01_im.val[1], t23_im.val[1]));
+                        vst1q_f32(&d_im[(j+3) * d_stride + i], vzip2q_f32(t01_im.val[1], t23_im.val[1]));
                     }
                 }
             });
@@ -191,11 +226,12 @@ public:
 
         // ---------------------------------------------------------
         // STEP 6: Extract 1D Output + Pack to AoS
-        // FIX: Sequential Write to output array
+        // FIX: Sequential Write (Write-Combining friendly)
         // ---------------------------------------------------------
-        dispatch_apply(N2, DISPATCH_APPLY_AUTO, ^(size_t c) {
-            for (int r = 0; r < N1; ++r) {
-                int k = r * N2 + c; 
+        dispatch_apply(N1, DISPATCH_APPLY_AUTO, ^(size_t r) {
+            int base_k = r * N2;
+            for (int c = 0; c < N2; ++c) {
+                int k = base_k + c;
                 int idx = k * 2;
                 out_ptr[idx]     = matT2_re[c * stride_N1 + r];
                 out_ptr[idx + 1] = matT2_im[c * stride_N1 + r];
@@ -209,10 +245,7 @@ public:
     void performForward(const float* in_re, const float* in_im, 
                         float* out_re, float* out_im) {
         
-        // ---------------------------------------------------------
-        // STEP 1: Map 1D SoA Input to 2D Matrix
-        // FIX: Sequential Read
-        // ---------------------------------------------------------
+        // STEP 1: Sequential Read
         dispatch_apply(N2, DISPATCH_APPLY_AUTO, ^(size_t c) {
             int base_n = c * N1;
             for (int r = 0; r < N1; ++r) {
@@ -263,7 +296,7 @@ public:
             });
         }
 
-        // STEP 4
+        // STEP 4: NEON 4x4 Block Transpose
         {
             const int TILE = 32; 
             int tiles_r = (N1 + TILE - 1) / TILE;
@@ -278,10 +311,29 @@ public:
                 int r_start = tr * TILE; int c_start = tc * TILE;
                 int r_end = std::min(r_start + TILE, N1);
                 int c_end = std::min(c_start + TILE, N2);
-                for (int i = r_start; i < r_end; ++i) {
-                    for (int j = c_start; j < c_end; ++j) {
-                        d_re[j * d_stride + i] = s_re[i * s_stride + j];
-                        d_im[j * d_stride + i] = s_im[i * s_stride + j];
+                for (int i = r_start; i < r_end; i += 4) {
+                    for (int j = c_start; j < c_end; j += 4) {
+                        float32x4_t row0_re = vld1q_f32(&s_re[i * s_stride + j]);
+                        float32x4_t row1_re = vld1q_f32(&s_re[(i+1) * s_stride + j]);
+                        float32x4_t row2_re = vld1q_f32(&s_re[(i+2) * s_stride + j]);
+                        float32x4_t row3_re = vld1q_f32(&s_re[(i+3) * s_stride + j]);
+                        float32x4x2_t t01_re = vtrnq_f32(row0_re, row1_re);
+                        float32x4x2_t t23_re = vtrnq_f32(row2_re, row3_re);
+                        vst1q_f32(&d_re[j * d_stride + i], vzip1q_f32(t01_re.val[0], t23_re.val[0]));
+                        vst1q_f32(&d_re[(j+1) * d_stride + i], vzip2q_f32(t01_re.val[0], t23_re.val[0]));
+                        vst1q_f32(&d_re[(j+2) * d_stride + i], vzip1q_f32(t01_re.val[1], t23_re.val[1]));
+                        vst1q_f32(&d_re[(j+3) * d_stride + i], vzip2q_f32(t01_re.val[1], t23_re.val[1]));
+
+                        float32x4_t row0_im = vld1q_f32(&s_im[i * s_stride + j]);
+                        float32x4_t row1_im = vld1q_f32(&s_im[(i+1) * s_stride + j]);
+                        float32x4_t row2_im = vld1q_f32(&s_im[(i+2) * s_stride + j]);
+                        float32x4_t row3_im = vld1q_f32(&s_im[(i+3) * s_stride + j]);
+                        float32x4x2_t t01_im = vtrnq_f32(row0_im, row1_im);
+                        float32x4x2_t t23_im = vtrnq_f32(row2_im, row3_im);
+                        vst1q_f32(&d_im[j * d_stride + i], vzip1q_f32(t01_im.val[0], t23_im.val[0]));
+                        vst1q_f32(&d_im[(j+1) * d_stride + i], vzip2q_f32(t01_im.val[0], t23_im.val[0]));
+                        vst1q_f32(&d_im[(j+2) * d_stride + i], vzip1q_f32(t01_im.val[1], t23_im.val[1]));
+                        vst1q_f32(&d_im[(j+3) * d_stride + i], vzip2q_f32(t01_im.val[1], t23_im.val[1]));
                     }
                 }
             });
@@ -299,10 +351,11 @@ public:
             });
         }
 
-        // STEP 6: Extract to SoA
-        dispatch_apply(N2, DISPATCH_APPLY_AUTO, ^(size_t c) {
-            for (int r = 0; r < N1; ++r) {
-                int k = r * N2 + c; 
+        // STEP 6: Sequential Write
+        dispatch_apply(N1, DISPATCH_APPLY_AUTO, ^(size_t r) {
+            int base_k = r * N2;
+            for (int c = 0; c < N2; ++c) {
+                int k = base_k + c; 
                 out_re[k] = matT2_re[c * stride_N1 + r];
                 out_im[k] = matT2_im[c * stride_N1 + r];
             }

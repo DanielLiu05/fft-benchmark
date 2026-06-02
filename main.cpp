@@ -172,14 +172,14 @@ int main() {
         if (order == 16) iterations = 1000;
         if (order == 18) iterations = 500;
         if (order == 20) iterations = 200;
-        if (order == 22) iterations = 80;
-        if (order == 24) iterations = 20;
-        if (order == 26) iterations = 5;
+        if (order == 22) iterations = 60;
+        if (order == 24) iterations = 15;
+        if (order == 26) iterations = 4;
 
         size_t fftSize = 1 << order;
         
         std::cout << "================================================================\n";
-        std::cout << " FFT Benchmark & Verification: Size = " << fftSize << " samples\n";
+        std::cout << " FFT Benchmark & Verification: Size = " << fftSize << " samples; order=" << order << "\n";
         std::cout << " Iterations per engine: " << iterations << "\n";
         std::cout << "================================================================\n";
 
