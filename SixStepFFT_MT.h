@@ -190,13 +190,13 @@ public:
                         float32x4_t row2_re = vld1q_f32(&s_re[(i+2) * s_stride + j]);
                         float32x4_t row3_re = vld1q_f32(&s_re[(i+3) * s_stride + j]);
 
-                        float32x4x2_t t01_re = vtrnq_f32(row0_re, row1_re);
-                        float32x4x2_t t23_re = vtrnq_f32(row2_re, row3_re);
+                        float32x4x2_t t01_re = vtrnq_f32(row0_re, row1_re); // val[0]=[a0,b0,a2,b2], val[1]=[a1,b1,a3,b3]
+                        float32x4x2_t t23_re = vtrnq_f32(row2_re, row3_re); // val[0]=[c0,d0,c2,d2], val[1]=[c1,d1,c3,d3]
 
-                        vst1q_f32(&d_re[j * d_stride + i], vzip1q_f32(t01_re.val[0], t23_re.val[0]));
-                        vst1q_f32(&d_re[(j+1) * d_stride + i], vzip2q_f32(t01_re.val[0], t23_re.val[0]));
-                        vst1q_f32(&d_re[(j+2) * d_stride + i], vzip1q_f32(t01_re.val[1], t23_re.val[1]));
-                        vst1q_f32(&d_re[(j+3) * d_stride + i], vzip2q_f32(t01_re.val[1], t23_re.val[1]));
+                        vst1q_f32(&d_re[j * d_stride + i],       vcombine_f32(vget_low_f32(t01_re.val[0]),  vget_low_f32(t23_re.val[0])));  // [a0, b0, c0, d0]
+                        vst1q_f32(&d_re[(j+1) * d_stride + i],   vcombine_f32(vget_low_f32(t01_re.val[1]),  vget_low_f32(t23_re.val[1])));  // [a1, b1, c1, d1]
+                        vst1q_f32(&d_re[(j+2) * d_stride + i],   vcombine_f32(vget_high_f32(t01_re.val[0]), vget_high_f32(t23_re.val[0]))); // [a2, b2, c2, d2]
+                        vst1q_f32(&d_re[(j+3) * d_stride + i],   vcombine_f32(vget_high_f32(t01_re.val[1]), vget_high_f32(t23_re.val[1]))); // [a3, b3, c3, d3]
 
                         // --- Transpose Imaginary Part ---
                         float32x4_t row0_im = vld1q_f32(&s_im[i * s_stride + j]);
@@ -207,10 +207,10 @@ public:
                         float32x4x2_t t01_im = vtrnq_f32(row0_im, row1_im);
                         float32x4x2_t t23_im = vtrnq_f32(row2_im, row3_im);
 
-                        vst1q_f32(&d_im[j * d_stride + i], vzip1q_f32(t01_im.val[0], t23_im.val[0]));
-                        vst1q_f32(&d_im[(j+1) * d_stride + i], vzip2q_f32(t01_im.val[0], t23_im.val[0]));
-                        vst1q_f32(&d_im[(j+2) * d_stride + i], vzip1q_f32(t01_im.val[1], t23_im.val[1]));
-                        vst1q_f32(&d_im[(j+3) * d_stride + i], vzip2q_f32(t01_im.val[1], t23_im.val[1]));
+                        vst1q_f32(&d_im[j * d_stride + i],       vcombine_f32(vget_low_f32(t01_im.val[0]),  vget_low_f32(t23_im.val[0])));
+                        vst1q_f32(&d_im[(j+1) * d_stride + i],   vcombine_f32(vget_low_f32(t01_im.val[1]),  vget_low_f32(t23_im.val[1])));
+                        vst1q_f32(&d_im[(j+2) * d_stride + i],   vcombine_f32(vget_high_f32(t01_im.val[0]), vget_high_f32(t23_im.val[0])));
+                        vst1q_f32(&d_im[(j+3) * d_stride + i],   vcombine_f32(vget_high_f32(t01_im.val[1]), vget_high_f32(t23_im.val[1])));
                     }
                 }
             });
@@ -326,27 +326,33 @@ public:
                 int c_end = std::min(c_start + TILE, N2);
                 for (int i = r_start; i < r_end; i += 4) {
                     for (int j = c_start; j < c_end; j += 4) {
+                        // --- Transpose Real Part ---
                         float32x4_t row0_re = vld1q_f32(&s_re[i * s_stride + j]);
                         float32x4_t row1_re = vld1q_f32(&s_re[(i+1) * s_stride + j]);
                         float32x4_t row2_re = vld1q_f32(&s_re[(i+2) * s_stride + j]);
                         float32x4_t row3_re = vld1q_f32(&s_re[(i+3) * s_stride + j]);
-                        float32x4x2_t t01_re = vtrnq_f32(row0_re, row1_re);
-                        float32x4x2_t t23_re = vtrnq_f32(row2_re, row3_re);
-                        vst1q_f32(&d_re[j * d_stride + i], vzip1q_f32(t01_re.val[0], t23_re.val[0]));
-                        vst1q_f32(&d_re[(j+1) * d_stride + i], vzip2q_f32(t01_re.val[0], t23_re.val[0]));
-                        vst1q_f32(&d_re[(j+2) * d_stride + i], vzip1q_f32(t01_re.val[1], t23_re.val[1]));
-                        vst1q_f32(&d_re[(j+3) * d_stride + i], vzip2q_f32(t01_re.val[1], t23_re.val[1]));
 
+                        float32x4x2_t t01_re = vtrnq_f32(row0_re, row1_re); // val[0]=[a0,b0,a2,b2], val[1]=[a1,b1,a3,b3]
+                        float32x4x2_t t23_re = vtrnq_f32(row2_re, row3_re); // val[0]=[c0,d0,c2,d2], val[1]=[c1,d1,c3,d3]
+
+                        vst1q_f32(&d_re[j * d_stride + i],       vcombine_f32(vget_low_f32(t01_re.val[0]),  vget_low_f32(t23_re.val[0])));  // [a0, b0, c0, d0]
+                        vst1q_f32(&d_re[(j+1) * d_stride + i],   vcombine_f32(vget_low_f32(t01_re.val[1]),  vget_low_f32(t23_re.val[1])));  // [a1, b1, c1, d1]
+                        vst1q_f32(&d_re[(j+2) * d_stride + i],   vcombine_f32(vget_high_f32(t01_re.val[0]), vget_high_f32(t23_re.val[0]))); // [a2, b2, c2, d2]
+                        vst1q_f32(&d_re[(j+3) * d_stride + i],   vcombine_f32(vget_high_f32(t01_re.val[1]), vget_high_f32(t23_re.val[1]))); // [a3, b3, c3, d3]
+
+                        // --- Transpose Imaginary Part ---
                         float32x4_t row0_im = vld1q_f32(&s_im[i * s_stride + j]);
                         float32x4_t row1_im = vld1q_f32(&s_im[(i+1) * s_stride + j]);
                         float32x4_t row2_im = vld1q_f32(&s_im[(i+2) * s_stride + j]);
                         float32x4_t row3_im = vld1q_f32(&s_im[(i+3) * s_stride + j]);
+
                         float32x4x2_t t01_im = vtrnq_f32(row0_im, row1_im);
                         float32x4x2_t t23_im = vtrnq_f32(row2_im, row3_im);
-                        vst1q_f32(&d_im[j * d_stride + i], vzip1q_f32(t01_im.val[0], t23_im.val[0]));
-                        vst1q_f32(&d_im[(j+1) * d_stride + i], vzip2q_f32(t01_im.val[0], t23_im.val[0]));
-                        vst1q_f32(&d_im[(j+2) * d_stride + i], vzip1q_f32(t01_im.val[1], t23_im.val[1]));
-                        vst1q_f32(&d_im[(j+3) * d_stride + i], vzip2q_f32(t01_im.val[1], t23_im.val[1]));
+
+                        vst1q_f32(&d_im[j * d_stride + i],       vcombine_f32(vget_low_f32(t01_im.val[0]),  vget_low_f32(t23_im.val[0])));
+                        vst1q_f32(&d_im[(j+1) * d_stride + i],   vcombine_f32(vget_low_f32(t01_im.val[1]),  vget_low_f32(t23_im.val[1])));
+                        vst1q_f32(&d_im[(j+2) * d_stride + i],   vcombine_f32(vget_high_f32(t01_im.val[0]), vget_high_f32(t23_im.val[0])));
+                        vst1q_f32(&d_im[(j+3) * d_stride + i],   vcombine_f32(vget_high_f32(t01_im.val[1]), vget_high_f32(t23_im.val[1])));
                     }
                 }
             });
