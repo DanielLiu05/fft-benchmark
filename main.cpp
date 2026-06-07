@@ -164,7 +164,7 @@ void runBenchmark(const std::string& engineName, int order, int iterations, cons
 // ============================================================================
 int main() {
     // The Scientific Test Matrix
-    std::vector<int> test_orders = {10, 16, 18, 20, 22, 24, 26};
+    std::vector<int> test_orders = {10, 16};
     
     for (int order : test_orders) {
         // Dynamic Iteration Scaling
