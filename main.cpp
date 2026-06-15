@@ -44,7 +44,7 @@ template <typename FFT_Engine>
 void runBenchmark(const std::string& engineName, int order, int iterations, const std::complex<float>* trueOutput) {
     size_t fftSize = 1 << order;
     
-    size_t alignment = 32;
+    size_t alignment = 128;
     size_t bytes = fftSize * sizeof(std::complex<float>);
     if (bytes % alignment != 0) {
         bytes += alignment - (bytes % alignment);
