@@ -16,6 +16,7 @@
 #include "NeonFFT.h"
 #include "AppleFFT.h"
 #include "SixStepFFT_MT.h"
+#include "AArch64FFT.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -44,7 +45,7 @@ template <typename FFT_Engine>
 void runBenchmark(const std::string& engineName, int order, int iterations, const std::complex<float>* trueOutput) {
     size_t fftSize = 1 << order;
     
-    size_t alignment = 32;
+    size_t alignment = 128;
     size_t bytes = fftSize * sizeof(std::complex<float>);
     if (bytes % alignment != 0) {
         bytes += alignment - (bytes % alignment);
@@ -206,10 +207,13 @@ int main() {
 
         // Run the engines
         runBenchmark<ScalarFFT>("Scalar Fallback", order, iterations, trueOutput.data());
-        runBenchmark<NeonFFT>("my Custom ARM NEON", order, iterations, trueOutput.data());
+        runBenchmark<AArch64FFT>("my inline assembly optimization",order, iterations, trueOutput.data());
+        runBenchmark<NeonFFT>("my Custom ARM NEON optimization", order, iterations, trueOutput.data());
         runBenchmark<SixStepFFT_MT>("my sixstep algorithm optimization", order, iterations, trueOutput.data()); 
         
         runBenchmark<AppleFFT>("Apple vDSP", order, iterations, trueOutput.data());
+
+    
         
         std::cout << "\n";
         
