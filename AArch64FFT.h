@@ -44,7 +44,7 @@ v2.0.0 Rewritten core SIMD math to raw AArch64 Inline Assembly
 // Prevents cache-line splits during SIMD loads/stores in the hot loop.
 // =============================================================================
 template <typename T, size_t Alignment = NEONFFT_CACHELINE_ALIGNMENT>
-class AlignedAllocator {
+class AlignedAllocator_2 {
 public:
     using value_type = T;
     using size_type = std::size_t;
@@ -52,9 +52,9 @@ public:
     using propagate_on_container_move_assignment = std::true_type;
     using is_always_equal = std::true_type;
 
-    AlignedAllocator() noexcept = default;
+    AlignedAllocator_2() noexcept = default;
     template <typename U>
-    AlignedAllocator(const AlignedAllocator<U, Alignment>&) noexcept {}
+    AlignedAllocator_2(const AlignedAllocator_2<U, Alignment>&) noexcept {}
 
     T* allocate(size_type n) {
         if (n > std::numeric_limits<size_type>::max() / sizeof(T)) throw std::bad_alloc();
@@ -79,11 +79,11 @@ public:
 
     template <typename U>
     struct rebind {
-        using other = AlignedAllocator<U, Alignment>;
+        using other = AlignedAllocator_2<U, Alignment>;
     };
 
-    bool operator==(const AlignedAllocator&) const noexcept { return true; }
-    bool operator!=(const AlignedAllocator&) const noexcept { return false; }
+    bool operator==(const AlignedAllocator_2&) const noexcept { return true; }
+    bool operator!=(const AlignedAllocator_2&) const noexcept { return false; }
 };
 
 // =============================================================================
@@ -204,8 +204,8 @@ public:
     
     // Helper struct to guarantee 64B/128B aligned input/output buffers for the user
     struct AlignedBuffer {
-        std::vector<float, AlignedAllocator<float>> re;
-        std::vector<float, AlignedAllocator<float>> im;
+        std::vector<float, AlignedAllocator_2<float>> re;
+        std::vector<float, AlignedAllocator_2<float>> im;
         AlignedBuffer(size_t size) : re(size), im(size) {}
     };
 
@@ -573,12 +573,12 @@ private:
     int order;
     int fftSize;
     std::vector<Complex> twiddles;
-    std::vector<std::vector<float, AlignedAllocator<float>>> packed_twiddles;
+    std::vector<std::vector<float, AlignedAllocator_2<float>>> packed_twiddles;
 
-    mutable std::vector<float, AlignedAllocator<float>> temp_in_re;
-    mutable std::vector<float, AlignedAllocator<float>> temp_in_im;
-    mutable std::vector<float, AlignedAllocator<float>> temp_out_re;
-    mutable std::vector<float, AlignedAllocator<float>> temp_out_im;
+    mutable std::vector<float, AlignedAllocator_2<float>> temp_in_re;
+    mutable std::vector<float, AlignedAllocator_2<float>> temp_in_im;
+    mutable std::vector<float, AlignedAllocator_2<float>> temp_out_re;
+    mutable std::vector<float, AlignedAllocator_2<float>> temp_out_im;
 
     void bitReverse(float* re, float* im, int n) const {
         for (int i = 0; i < n; ++i) {
