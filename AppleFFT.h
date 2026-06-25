@@ -10,7 +10,7 @@ public:
     using Complex = std::complex<float>;
 
     AppleFFT(int order) : order(order), fftSize(1 << order) {
-        // Create the FFT setup. FFT_RADIX2 is the standard Cooley-Tukey algorithm.
+        // Create fft setup 用的radix-2
         fftSetup = vDSP_create_fftsetup(order, FFT_RADIX2);
         if (!fftSetup) {
             throw std::runtime_error("Failed to create vDSP FFT Setup");
@@ -18,7 +18,7 @@ public:
 
         // Pre-allocate contiguous split-complex scratch buffers.
         // Apple Silicon's vDSP requires contiguous memory to use its fastest NEON/AMX paths.
-        // We make them mutable so performForward() can remain const for the benchmark harness.
+        // make them mutable so performForward() can remain const for the benchmark harness.
         scratchReal.resize(fftSize);
         scratchImag.resize(fftSize);
         outReal.resize(fftSize);
@@ -31,10 +31,10 @@ public:
         }
     }
 
-    // Matches the ScalarFFT interface for a 1:1 benchmark
+    // Matches ScalarFFT 控制变量 
     void performForward(const Complex* input, Complex* output) const {
         // 1. DE-INTERLEAVE: Convert std::complex (interleaved) to SplitComplex (contiguous)
-        // This gives vDSP the memory layout it needs to unleash its fastest SIMD instructions.
+        // 创建最优memory layout
         DSPSplitComplex splitIn = { scratchReal.data(), scratchImag.data() };
         vDSP_ctoz((const DSPComplex*)input, 2, &splitIn, 1, fftSize);
 
@@ -51,8 +51,8 @@ public:
 
         // NOTE ON NORMALIZATION: 
         // Standard FFTW and KissFFT DO NOT scale the forward transform.
-        // We omit vDSP_vsmul scaling here to ensure a mathematically fair 
-        // 1:1 comparison against your NEON code and the Scalar Fallback.
+        // ========= omit vDSP_vsmul scaling 保证对比公平性
+
     }
 
     std::string getName() const { return "Apple vDSP (Accelerate)"; }
