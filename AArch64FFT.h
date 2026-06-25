@@ -1,25 +1,17 @@
 /*
 made by Daniel
-v1.0.0
-intrinsic optimizd radix-4
-v1.0.1
-intrinsic optimized radix-2 and radix-4(better)
-v1.0.2
-out of place fft using __restrict and manual loop unrolling
+v1.0.0 intrinsic optimizd radix-4
+v1.0.1 intrinsic optimized radix-2 and radix-4(better)
+v1.0.2 out of place fft using __restrict and manual loop unrolling
 bit reversal precompute switched to bit reversal done with __builtin_bitreverse32
-
-v1.1.1
-Switched to split-complex (SoA) and avoid vld2/vst2 in the hot loop.
-v1.1.2
-removed dead vars
-alignedAllocator
-std::assume_aligned
-
-v1.2.0
-changed alignment from 64 to architecture specific
+v1.1.1 Switched to split-complex (SoA) and avoid vld2/vst2 in the hot loop.
+v1.1.2 removed dead vars, alignedAllocator, std::assume_aligned
+v1.2.0 changed alignment from 64 to architecture specific
+v2.0.0 Rewritten core SIMD math to raw AArch64 Inline Assembly
 */
 #pragma once
-// ARM64 NEON Intrinsics Header
+
+// ARM64 NEON Intrinsics Header (Still needed for types and vld2/vst2)
 #include <arm_neon.h>
 #include <complex>
 #include <vector>
@@ -42,17 +34,17 @@ changed alignment from 64 to architecture specific
 // Standard x86-64 and most other ARM cores use 64-byte Cache Lines.
 // =================================================================================
 #if defined(__APPLE__) && (defined(__arm64__) || defined(__aarch64__))
-    #define NEONFFT_CACHELINE_ALIGNMENT 128
+#define NEONFFT_CACHELINE_ALIGNMENT 128
 #else
-    #define NEONFFT_CACHELINE_ALIGNMENT 64
+#define NEONFFT_CACHELINE_ALIGNMENT 64
 #endif
 
 // =============================================================================
-// 64-BYTE ALIGNED ALLOCATOR (Cache-Line  Optimization)
+// 64/128-BYTE ALIGNED ALLOCATOR (Cache-Line Optimization)
 // Prevents cache-line splits during SIMD loads/stores in the hot loop.
 // =============================================================================
 template <typename T, size_t Alignment = NEONFFT_CACHELINE_ALIGNMENT>
-class AlignedAllocator {
+class AlignedAllocator_2 {
 public:
     using value_type = T;
     using size_type = std::size_t;
@@ -60,9 +52,9 @@ public:
     using propagate_on_container_move_assignment = std::true_type;
     using is_always_equal = std::true_type;
 
-    AlignedAllocator() noexcept = default;
+    AlignedAllocator_2() noexcept = default;
     template <typename U>
-    AlignedAllocator(const AlignedAllocator<U, Alignment>&) noexcept {}
+    AlignedAllocator_2(const AlignedAllocator_2<U, Alignment>&) noexcept {}
 
     T* allocate(size_type n) {
         if (n > std::numeric_limits<size_type>::max() / sizeof(T)) throw std::bad_alloc();
@@ -87,27 +79,139 @@ public:
 
     template <typename U>
     struct rebind {
-        using other = AlignedAllocator<U, Alignment>;
+        using other = AlignedAllocator_2<U, Alignment>;
     };
 
-    bool operator==(const AlignedAllocator&) const noexcept { return true; }
-    bool operator!=(const AlignedAllocator&) const noexcept { return false; }
+    bool operator==(const AlignedAllocator_2&) const noexcept { return true; }
+    bool operator!=(const AlignedAllocator_2&) const noexcept { return false; }
 };
 
-class NeonFFT {
+// =============================================================================
+// INLINE ASSEMBLY WRAPPERS FOR AARCH64 SIMD INSTRUCTIONS
+// Replaces NEON Intrinsics with raw assembly for maximum compiler transparency.
+// =============================================================================
+
+static inline float32x4_t asm_ld1q_f32(const float* ptr) {
+    float32x4_t res;
+    __asm__ volatile (
+        "ld1 {%0.4s}, [%1] \n\t" /* LD1 (Load single 1-element structure): Loads 4 contiguous 32-bit floats from memory address %1 into vector register %0 */
+        : "=w" (res) 
+        : "r" (ptr)
+    );
+    return res;
+}
+
+static inline void asm_st1q_f32(float* ptr, float32x4_t vec) {
+    __asm__ volatile (
+        "st1 {%0.4s}, [%1] \n\t" /* ST1 (Store single 1-element structure): Stores 4 contiguous 32-bit floats from vector register %0 to memory address %1 */
+        : 
+        : "w" (vec), "r" (ptr) 
+        : "memory" /* Clobber memory to prevent compiler reordering stores */
+    );
+}
+
+static inline float32x4_t asm_uzp1q_f32(float32x4_t a, float32x4_t b) {
+    float32x4_t res;
+    __asm__ (
+        "uzp1 %0.4s, %1.4s, %2.4s \n\t" /* UZP1 (Unzip vectors): Extracts even-indexed elements (0, 2 from %1 and 0, 2 from %2) and packs them into %0 */
+        : "=w" (res) 
+        : "w" (a), "w" (b)
+    );
+    return res;
+}
+
+static inline float32x4_t asm_uzp2q_f32(float32x4_t a, float32x4_t b) {
+    float32x4_t res;
+    __asm__ (
+        "uzp2 %0.4s, %1.4s, %2.4s \n\t" /* UZP2 (Unzip vectors): Extracts odd-indexed elements (1, 3 from %1 and 1, 3 from %2) and packs them into %0 */
+        : "=w" (res) 
+        : "w" (a), "w" (b)
+    );
+    return res;
+}
+
+static inline float32x4_t asm_zip1q_f32(float32x4_t a, float32x4_t b) {
+    float32x4_t res;
+    __asm__ (
+        "zip1 %0.4s, %1.4s, %2.4s \n\t" /* ZIP1 (Zip vectors): Interleaves the lower halves (elements 0, 1 from %1 and 0, 1 from %2) into %0 */
+        : "=w" (res) 
+        : "w" (a), "w" (b)
+    );
+    return res;
+}
+
+static inline float32x4_t asm_zip2q_f32(float32x4_t a, float32x4_t b) {
+    float32x4_t res;
+    __asm__ (
+        "zip2 %0.4s, %1.4s, %2.4s \n\t" /* ZIP2 (Zip vectors): Interleaves the upper halves (elements 2, 3 from %1 and 2, 3 from %2) into %0 */
+        : "=w" (res) 
+        : "w" (a), "w" (b)
+    );
+    return res;
+}
+
+static inline float32x4_t asm_faddq_f32(float32x4_t a, float32x4_t b) {
+    float32x4_t res;
+    __asm__ (
+        "fadd %0.4s, %1.4s, %2.4s \n\t" /* FADD (Floating-point Add): Adds 4 single-precision floats in %1 and %2, stores result in %0 */
+        : "=w" (res) 
+        : "w" (a), "w" (b)
+    );
+    return res;
+}
+
+static inline float32x4_t asm_fsubq_f32(float32x4_t a, float32x4_t b) {
+    float32x4_t res;
+    __asm__ (
+        "fsub %0.4s, %1.4s, %2.4s \n\t" /* FSUB (Floating-point Subtract): Subtracts 4 single-precision floats in %2 from %1, stores result in %0 */
+        : "=w" (res) 
+        : "w" (a), "w" (b)
+    );
+    return res;
+}
+
+static inline float32x4_t asm_fmulq_f32(float32x4_t a, float32x4_t b) {
+    float32x4_t res;
+    __asm__ (
+        "fmul %0.4s, %1.4s, %2.4s \n\t" /* FMUL (Floating-point Multiply): Multiplies 4 single-precision floats in %1 and %2, stores result in %0 */
+        : "=w" (res) 
+        : "w" (a), "w" (b)
+    );
+    return res;
+}
+
+static inline float32x4_t asm_fmlaq_f32(float32x4_t acc, float32x4_t a, float32x4_t b) {
+    __asm__ (
+        "fmla %0.4s, %1.4s, %2.4s \n\t" /* FMLA (Floating-point fused Multiply-Add): Multiplies %1 and %2, adds to %0, stores back in %0 */
+        : "+w" (acc) 
+        : "w" (a), "w" (b)
+    );
+    return acc;
+}
+
+static inline float32x4_t asm_fmlsq_f32(float32x4_t acc, float32x4_t a, float32x4_t b) {
+    __asm__ (
+        "fmls %0.4s, %1.4s, %2.4s \n\t" /* FMLS (Floating-point fused Multiply-Subtract): Multiplies %1 and %2, subtracts from %0, stores back in %0 */
+        : "+w" (acc) 
+        : "w" (a), "w" (b)
+    );
+    return acc;
+}
+
+class AArch64FFT {
 public:
     using Complex = std::complex<float>;
-
-    // Helper struct to guarantee 64B aligned input/output buffers for the user
+    
+    // Helper struct to guarantee 64B/128B aligned input/output buffers for the user
     struct AlignedBuffer {
-        std::vector<float, AlignedAllocator<float>> re;
-        std::vector<float, AlignedAllocator<float>> im;
+        std::vector<float, AlignedAllocator_2<float>> re;
+        std::vector<float, AlignedAllocator_2<float>> im;
         AlignedBuffer(size_t size) : re(size), im(size) {}
     };
 
-    NeonFFT(int order) : order(order), fftSize(1 << order) {
+    AArch64FFT(int order) : order(order), fftSize(1 << order) {
         if (order < 3) {
-            throw std::invalid_argument("NEON FFT requires order >= 3 (size >= 8) for vectorization");
+            throw std::invalid_argument("AArch64 FFT requires order >= 3 (size >= 8) for vectorization");
         }
         
         // Twiddle table MUST be size fftSize to prevent out-of-bounds 
@@ -118,11 +222,9 @@ public:
             twiddles[i] = Complex((float)std::cos(phase), (float)std::sin(phase));
         }
 
-        // ========================================================================
+        // =====================================================================
         // TWIDDLE PRE-PACKING (Eliminates the SIMD Memory Wall)
         // Packed in Split-Complex (SoA) format: [Re0, Re1, Re2, Re3, Im0, Im1, Im2, Im3]
-        // v1.1.2 Now using AlignedAllocator to guarantee 64B cache-line alignment
-        // 
         // =====================================================================  
         packed_twiddles.resize(order + 1);
         
@@ -167,16 +269,10 @@ public:
         }
     }
 
-    // =================================================================
-    // BIT-REVERSAL PRECOMPUTATION
-    // =================================================================
-    // v1.0.2 现在替换为  __builtin_bitreverse32
-
     // =========================================================================
     // AOS WRAPPERS 
-    //        (For compatibility with std::complex<float> benchmarks)
-    // Uses mutable temp buffers + NEON vld2/vst2 降低 conversion overhead
-    // ==========================================================================
+    // (For compatibility with std::complex<float> benchmarks)
+    // =========================================================================
     void performForward(const Complex* __restrict__ input, Complex* __restrict__ output) const {
         if (temp_in_re.size() != static_cast<size_t>(fftSize)) {
             temp_in_re.resize(fftSize);
@@ -189,11 +285,11 @@ public:
         float* out_re_ptr = temp_in_re.data();
         float* out_im_ptr = temp_in_im.data();
         
-        // AoS -> SoA using NEON vld2
+        // AoS -> SoA using NEON vld2 (Kept as intrinsic due to consecutive register constraints)
         for (int i = 0; i < fftSize; i += 4) {
             float32x4x2_t A = vld2q_f32(in_ptr + i * 2);
-            vst1q_f32(out_re_ptr + i, A.val[0]);
-            vst1q_f32(out_im_ptr + i, A.val[1]);
+            asm_st1q_f32(out_re_ptr + i, A.val[0]);
+            asm_st1q_f32(out_im_ptr + i, A.val[1]);
         }
         
         performForward(temp_in_re.data(), temp_in_im.data(), temp_out_re.data(), temp_out_im.data());
@@ -202,10 +298,10 @@ public:
         const float* in_re_ptr = temp_out_re.data();
         const float* in_im_ptr = temp_out_im.data();
         
-        // SoA -> AoS using NEON vst2
+        // SoA -> AoS using NEON vst2 (Kept as intrinsic due to consecutive register constraints)
         for (int i = 0; i < fftSize; i += 4) {
-            float32x4_t re = vld1q_f32(in_re_ptr + i);
-            float32x4_t im = vld1q_f32(in_im_ptr + i);
+            float32x4_t re = asm_ld1q_f32(in_re_ptr + i);
+            float32x4_t im = asm_ld1q_f32(in_im_ptr + i);
             float32x4x2_t A;
             A.val[0] = re;
             A.val[1] = im;
@@ -225,15 +321,15 @@ public:
         
         for (int i = 0; i < fftSize; i += 4) {
             float32x4x2_t A = vld2q_f32(data_ptr + i * 2);
-            vst1q_f32(out_re_ptr + i, A.val[0]);
-            vst1q_f32(out_im_ptr + i, A.val[1]);
+            asm_st1q_f32(out_re_ptr + i, A.val[0]);
+            asm_st1q_f32(out_im_ptr + i, A.val[1]);
         }
         
         performForward(temp_in_re.data(), temp_in_im.data());
         
         for (int i = 0; i < fftSize; i += 4) {
-            float32x4_t re = vld1q_f32(out_re_ptr + i);
-            float32x4_t im = vld1q_f32(out_im_ptr + i);
+            float32x4_t re = asm_ld1q_f32(out_re_ptr + i);
+            float32x4_t im = asm_ld1q_f32(out_im_ptr + i);
             float32x4x2_t A;
             A.val[0] = re;
             A.val[1] = im;
@@ -243,8 +339,6 @@ public:
 
     // =====================================================================
     // OUT-OF-PLACE FFT 
-    // v1.0.2  (新增 __restrict__ and Manual Loop Unrolling)
-    // v1.1.0  (Switched to Split-Complex / SoA Interface)
     // =====================================================================
     void performForward(const float* __restrict__ in_re, const float* __restrict__ in_im,
                         float* __restrict__ out_re, float* __restrict__ out_im) const {
@@ -254,6 +348,7 @@ public:
         out_re = (float*)__builtin_assume_aligned(out_re, NEONFFT_CACHELINE_ALIGNMENT);
         out_im = (float*)__builtin_assume_aligned(out_im, NEONFFT_CACHELINE_ALIGNMENT);
 #endif
+
         if (in_re == out_re && in_im == out_im) {
             // Fallback for strict in-place calls
             bitReverse(out_re, out_im, fftSize);
@@ -288,59 +383,53 @@ public:
     }
 
     // =====================================================================
-    // IN-PLACE SIMD BUTTERFLY MATH
+    // IN-PLACE SIMD BUTTERFLY MATH (AArch64 Assembly)
     // =====================================================================
     void performForward(float* __restrict__ re, float* __restrict__ im) const {
 #if defined(__GNUC__) || defined(__clang__)
         re = (float*)__builtin_assume_aligned(re, NEONFFT_CACHELINE_ALIGNMENT);
         im = (float*)__builtin_assume_aligned(im, NEONFFT_CACHELINE_ALIGNMENT);
 #endif
+
         int s = 2;
-        
         // =====================================================================
-        // RADIX-2 STAGE FOR ODD ORDERS (v1.0.2 now vectorized)
+        // RADIX-2 STAGE FOR ODD ORDERS
         // =====================================================================
         if (order % 2 != 0) {
-            // Radix-2时, m=2, half_m=1. The twiddle factor is always twiddles[0] = (1.0, 0.0).
-            // 无须复数乘法
-            
             int k = 0;
             // Vectorized path: process 8 complex numbers (4 butterflies) per iteration
             for (; k <= fftSize - 8; k += 8) {
                 // 1. LOAD 8 COMPLEX NUMBERS (Separated into Re/Im arrays)
-                float32x4_t re0 = vld1q_f32(&re[k]);
-                float32x4_t re1 = vld1q_f32(&re[k + 4]);
-                float32x4_t im0 = vld1q_f32(&im[k]);
-                float32x4_t im1 = vld1q_f32(&im[k + 4]);
+                float32x4_t re0 = asm_ld1q_f32(&re[k]);
+                float32x4_t re1 = asm_ld1q_f32(&re[k + 4]);
+                float32x4_t im0 = asm_ld1q_f32(&im[k]);
+                float32x4_t im1 = asm_ld1q_f32(&im[k + 4]);
                 
                 // 2. DE-INTERLEAVE to separate even (U) and odd (T) elements
-                // vuzp1 extracts even indices (0, 2, 4, 6), vuzp2 extracts odd indices (1, 3, 5, 7)
-                float32x4_t U_re = vuzp1q_f32(re0, re1);
-                float32x4_t T_re = vuzp2q_f32(re0, re1);
-                float32x4_t U_im = vuzp1q_f32(im0, im1);
-                float32x4_t T_im = vuzp2q_f32(im0, im1);
+                float32x4_t U_re = asm_uzp1q_f32(re0, re1);
+                float32x4_t T_re = asm_uzp2q_f32(re0, re1);
+                float32x4_t U_im = asm_uzp1q_f32(im0, im1);
+                float32x4_t T_im = asm_uzp2q_f32(im0, im1);
                 
                 // 3. BUTTERFLY MATH (Twiddle is 1+0i, so no FMA needed)
-                float32x4_t O0_re = vaddq_f32(U_re, T_re);
-                float32x4_t O0_im = vaddq_f32(U_im, T_im);
-                float32x4_t O1_re = vsubq_f32(U_re, T_re);
-                float32x4_t O1_im = vsubq_f32(U_im, T_im);
-                
+                float32x4_t O0_re = asm_faddq_f32(U_re, T_re);
+                float32x4_t O0_im = asm_faddq_f32(U_im, T_im);
+                float32x4_t O1_re = asm_fsubq_f32(U_re, T_re);
+                float32x4_t O1_im = asm_fsubq_f32(U_im, T_im);
+                 
                 // 4. INTERLEAVE BACK
-                // vzip1 takes the lower half, vzip2 takes the upper half
-                float32x4_t R0_re = vzip1q_f32(O0_re, O1_re);
-                float32x4_t R1_re = vzip2q_f32(O0_re, O1_re);
-                float32x4_t R0_im = vzip1q_f32(O0_im, O1_im);
-                float32x4_t R1_im = vzip2q_f32(O0_im, O1_im);
+                float32x4_t R0_re = asm_zip1q_f32(O0_re, O1_re);
+                float32x4_t R1_re = asm_zip2q_f32(O0_re, O1_re);
+                float32x4_t R0_im = asm_zip1q_f32(O0_im, O1_im);
+                float32x4_t R1_im = asm_zip2q_f32(O0_im, O1_im);
                 
                 // 5. STORE
-                vst1q_f32(&re[k], R0_re);
-                vst1q_f32(&re[k + 4], R1_re);
-                vst1q_f32(&im[k], R0_im);
-                vst1q_f32(&im[k + 4], R1_im);
+                asm_st1q_f32(&re[k], R0_re);
+                asm_st1q_f32(&re[k + 4], R1_re);
+                asm_st1q_f32(&im[k], R0_im);
+                asm_st1q_f32(&im[k + 4], R1_im);
             }
             
-            // 后备scalar fft 用不到
             for (; k < fftSize; k += 2) {
                 float u_re = re[k], u_im = im[k];
                 float t_re = re[k+1], t_im = im[k+1];
@@ -348,7 +437,6 @@ public:
                 re[k+1] = u_re - t_re; im[k+1] = u_im - t_im;
             }
             
-            // FIX 1: Advance to the correct starting stage for Radix-4
             s = 3; 
         }
         
@@ -360,9 +448,6 @@ public:
             int m_4 = m >> 2; 
 
             if (m_4 >= 4) {
-                // =========================================================
-                // NEON VECTORIZED PATH
-                // =========================================================
                 const float* __restrict__ tw_ptr_base = packed_twiddles[s].data();
 #if __cplusplus >= 202002L && defined(__cpp_lib_assume_aligned)
                 tw_ptr_base = std::assume_aligned<NEONFFT_CACHELINE_ALIGNMENT>(tw_ptr_base);
@@ -371,109 +456,98 @@ public:
 #endif
                 for (int k = 0; k < fftSize; k += m) {
                     const float* __restrict__ tw_ptr = tw_ptr_base;
-                    
                     for (int j = 0; j < m_4; j += 4) {
-                        //动态prefetch   待测试  目前用128
-                        
-                        if (m_4 >= 128 && (j + 32) < m_4)
-                        {
-                            __builtin_prefetch(tw_ptr + 24 * 8, 0, 3);//重点prefetch
-
+                        if (m_4 >= 128 && (j + 32) < m_4) {
+                            __builtin_prefetch(tw_ptr + 24 * 8, 0, 3);
                             __builtin_prefetch(&re[k+j+32], 0, 1);
                             __builtin_prefetch(&im[k+j+32], 0, 1);
-
                             __builtin_prefetch(&re[k+j+32+m_4], 0, 1);
                             __builtin_prefetch(&im[k+j+32+m_4], 0, 1);
                         }
 
-                        // 1. LOAD DATA (SoA layout avoids vld2 completely)
-                        float32x4_t A0_re = vld1q_f32(&re[k + j]);
-                        float32x4_t A0_im = vld1q_f32(&im[k + j]);
+                        // 1. LOAD DATA
+                        float32x4_t A0_re = asm_ld1q_f32(&re[k + j]);
+                        float32x4_t A0_im = asm_ld1q_f32(&im[k + j]);
                         
-                        // [FIX]: Swap A1 and A2 loads to compensate for Radix-2 bit reversal!
-                        float32x4_t A1_re = vld1q_f32(&re[k + j + 2 * m_4]); // Load from 2*m_4
-                        float32x4_t A1_im = vld1q_f32(&im[k + j + 2 * m_4]); 
+                        float32x4_t A1_re = asm_ld1q_f32(&re[k + j + 2 * m_4]); 
+                        float32x4_t A1_im = asm_ld1q_f32(&im[k + j + 2 * m_4]); 
 
-                        float32x4_t A2_re = vld1q_f32(&re[k + j + m_4]);     // Load from m_4
-                        float32x4_t A2_im = vld1q_f32(&im[k + j + m_4]);     
+                        float32x4_t A2_re = asm_ld1q_f32(&re[k + j + m_4]);     
+                        float32x4_t A2_im = asm_ld1q_f32(&im[k + j + m_4]);     
 
-                        float32x4_t A3_re = vld1q_f32(&re[k + j + 3 * m_4]);
-                        float32x4_t A3_im = vld1q_f32(&im[k + j + 3 * m_4]);
+                        float32x4_t A3_re = asm_ld1q_f32(&re[k + j + 3 * m_4]);
+                        float32x4_t A3_im = asm_ld1q_f32(&im[k + j + 3 * m_4]);
                         
                         // 2. LOAD PRE-PACKED TWIDDLES
-                        float32x4_t W1_re = vld1q_f32(tw_ptr +  0);
-                        float32x4_t W1_im = vld1q_f32(tw_ptr +  4);
-                        float32x4_t W2_re = vld1q_f32(tw_ptr +  8);
-                        float32x4_t W2_im = vld1q_f32(tw_ptr + 12);
-                        float32x4_t W3_re = vld1q_f32(tw_ptr + 16);
-                        float32x4_t W3_im = vld1q_f32(tw_ptr + 20);
+                        float32x4_t W1_re = asm_ld1q_f32(tw_ptr +  0);
+                        float32x4_t W1_im = asm_ld1q_f32(tw_ptr +  4);
+                        float32x4_t W2_re = asm_ld1q_f32(tw_ptr +  8);
+                        float32x4_t W2_im = asm_ld1q_f32(tw_ptr + 12);
+                        float32x4_t W3_re = asm_ld1q_f32(tw_ptr + 16);
+                        float32x4_t W3_im = asm_ld1q_f32(tw_ptr + 20);
                         tw_ptr += 24;
 
                         // 3. COMPLEX MULTIPLICATION (FMA)
-                        float32x4_t a1_re = vmulq_f32(W1_re, A1_re);
-                        a1_re = vfmsq_f32(a1_re, W1_im, A1_im);
-                        float32x4_t a1_im = vmulq_f32(W1_re, A1_im);
-                        a1_im = vfmaq_f32(a1_im, W1_im, A1_re);
+                        float32x4_t a1_re = asm_fmulq_f32(W1_re, A1_re);
+                        a1_re = asm_fmlsq_f32(a1_re, W1_im, A1_im);
+                        float32x4_t a1_im = asm_fmulq_f32(W1_re, A1_im);
+                        a1_im = asm_fmlaq_f32(a1_im, W1_im, A1_re);
                         
-                        float32x4_t a2_re = vmulq_f32(W2_re, A2_re);
-                        a2_re = vfmsq_f32(a2_re, W2_im, A2_im);
-                        float32x4_t a2_im = vmulq_f32(W2_re, A2_im);
-                        a2_im = vfmaq_f32(a2_im, W2_im, A2_re);
+                        float32x4_t a2_re = asm_fmulq_f32(W2_re, A2_re);
+                        a2_re = asm_fmlsq_f32(a2_re, W2_im, A2_im);
+                        float32x4_t a2_im = asm_fmulq_f32(W2_re, A2_im);
+                        a2_im = asm_fmlaq_f32(a2_im, W2_im, A2_re);
 
-                        float32x4_t a3_re = vmulq_f32(W3_re, A3_re);
-                        a3_re = vfmsq_f32(a3_re, W3_im, A3_im);
-                        float32x4_t a3_im = vmulq_f32(W3_re, A3_im);
-                        a3_im = vfmaq_f32(a3_im, W3_im, A3_re);
+                        float32x4_t a3_re = asm_fmulq_f32(W3_re, A3_re);
+                        a3_re = asm_fmlsq_f32(a3_re, W3_im, A3_im);
+                        float32x4_t a3_im = asm_fmulq_f32(W3_re, A3_im);
+                        a3_im = asm_fmlaq_f32(a3_im, W3_im, A3_re);
 
                         // 4. RADIX-4 BUTTERFLY MATH
-                        float32x4_t t0_re = vaddq_f32(A0_re, a2_re);
-                        float32x4_t t0_im = vaddq_f32(A0_im, a2_im);
-                        float32x4_t t1_re = vsubq_f32(A0_re, a2_re);
-                        float32x4_t t1_im = vsubq_f32(A0_im, a2_im);
+                        float32x4_t t0_re = asm_faddq_f32(A0_re, a2_re);
+                        float32x4_t t0_im = asm_faddq_f32(A0_im, a2_im);
+                        float32x4_t t1_re = asm_fsubq_f32(A0_re, a2_re);
+                        float32x4_t t1_im = asm_fsubq_f32(A0_im, a2_im);
 
-                        float32x4_t t2_re = vaddq_f32(a1_re, a3_re);
-                        float32x4_t t2_im = vaddq_f32(a1_im, a3_im);
-                        float32x4_t t3_re = vsubq_f32(a1_re, a3_re);
-                        float32x4_t t3_im = vsubq_f32(a1_im, a3_im);
+                        float32x4_t t2_re = asm_faddq_f32(a1_re, a3_re);
+                        float32x4_t t2_im = asm_faddq_f32(a1_im, a3_im);
+                        float32x4_t t3_re = asm_fsubq_f32(a1_re, a3_re);
+                        float32x4_t t3_im = asm_fsubq_f32(a1_im, a3_im);
 
-                        float32x4_t O0_re = vaddq_f32(t0_re, t2_re);
-                        float32x4_t O0_im = vaddq_f32(t0_im, t2_im);
-                        float32x4_t O2_re = vsubq_f32(t0_re, t2_re);
-                        float32x4_t O2_im = vsubq_f32(t0_im, t2_im);
+                        float32x4_t O0_re = asm_faddq_f32(t0_re, t2_re);
+                        float32x4_t O0_im = asm_faddq_f32(t0_im, t2_im);
+                        float32x4_t O2_re = asm_fsubq_f32(t0_re, t2_re);
+                        float32x4_t O2_im = asm_fsubq_f32(t0_im, t2_im);
 
-                        float32x4_t O1_re = vaddq_f32(t1_re, t3_im);
-                        float32x4_t O1_im = vsubq_f32(t1_im, t3_re);
-                        float32x4_t O3_re = vsubq_f32(t1_re, t3_im);
-                        float32x4_t O3_im = vaddq_f32(t1_im, t3_re);
+                        float32x4_t O1_re = asm_faddq_f32(t1_re, t3_im);
+                        float32x4_t O1_im = asm_fsubq_f32(t1_im, t3_re);
+                        float32x4_t O3_re = asm_fsubq_f32(t1_re, t3_im);
+                        float32x4_t O3_im = asm_faddq_f32(t1_im, t3_re);
 
                         // 5. STORE
-                        vst1q_f32(&re[k + j], O0_re);
-                        vst1q_f32(&im[k + j], O0_im);
-                        vst1q_f32(&re[k + j + m_4], O1_re);
-                        vst1q_f32(&im[k + j + m_4], O1_im);
-                        vst1q_f32(&re[k + j + 2 * m_4], O2_re);
-                        vst1q_f32(&im[k + j + 2 * m_4], O2_im);
-                        vst1q_f32(&re[k + j + 3 * m_4], O3_re);
-                        vst1q_f32(&im[k + j + 3 * m_4], O3_im);
+                        asm_st1q_f32(&re[k + j], O0_re);
+                        asm_st1q_f32(&im[k + j], O0_im);
+                        asm_st1q_f32(&re[k + j + m_4], O1_re);
+                        asm_st1q_f32(&im[k + j + m_4], O1_im);
+                        asm_st1q_f32(&re[k + j + 2 * m_4], O2_re);
+                        asm_st1q_f32(&im[k + j + 2 * m_4], O2_im);
+                        asm_st1q_f32(&re[k + j + 3 * m_4], O3_re);
+                        asm_st1q_f32(&im[k + j + 3 * m_4], O3_im);
                     }
                 }
             } else {
-                // =========================================================
-                // 后备scalar fft   (For m_4 < 4) 用不到
-                // =========================================================
-                int step = fftSize / m;     // 不放在hot loop中
+                // Scalar fallback
+                int step = fftSize / m;     
                 for (int k = 0; k < fftSize; k += m) {
                     for (int j = 0; j < m_4; ++j) {
                         Complex w1 = twiddles[j * step];
                         Complex w2 = twiddles[2 * j * step];
-                        Complex w3 = twiddles[3 * j * step];      
+                        Complex w3 = twiddles[3 * j * step];       
 
                         Complex a0(re[k + j], im[k + j]);
-                        // [FIX]: Swap a1 and a2 loads here as well!
                         Complex a1(re[k + j + 2 * m_4], im[k + j + 2 * m_4]); a1 *= w1;
                         Complex a2(re[k + j + m_4], im[k + j + m_4]); a2 *= w2;
-
-                        Complex a3(re[k + j + 3 * m_4], im[k + j + 3 * m_4]);  a3 *= w3;
+                        Complex a3(re[k + j + 3 * m_4], im[k + j + 3 * m_4]); a3 *= w3;
 
                         Complex t0 = a0 + a2;
                         Complex t1 = a0 - a2;
@@ -499,18 +573,13 @@ private:
     int order;
     int fftSize;
     std::vector<Complex> twiddles;
-    
-    // Applied AlignedAllocator to twiddle tables to prevent cache-line splits
-    std::vector<std::vector<float, AlignedAllocator<float>>> packed_twiddles;
-    
-    // Mutable temp buffers for AoS <-> SoA conversion wrappers
-    // Avoids allocation overhead in the benchmark hot loop
-    mutable std::vector<float, AlignedAllocator<float>> temp_in_re;
-    mutable std::vector<float, AlignedAllocator<float>> temp_in_im;
-    mutable std::vector<float, AlignedAllocator<float>> temp_out_re;
-    mutable std::vector<float, AlignedAllocator<float>> temp_out_im;
+    std::vector<std::vector<float, AlignedAllocator_2<float>>> packed_twiddles;
 
-    // 后备bit reverse, though the Out-of-Place path bypasses it
+    mutable std::vector<float, AlignedAllocator_2<float>> temp_in_re;
+    mutable std::vector<float, AlignedAllocator_2<float>> temp_in_im;
+    mutable std::vector<float, AlignedAllocator_2<float>> temp_out_re;
+    mutable std::vector<float, AlignedAllocator_2<float>> temp_out_im;
+
     void bitReverse(float* re, float* im, int n) const {
         for (int i = 0; i < n; ++i) {
             int j = __builtin_bitreverse32(i) >> (32 - order);
@@ -521,3 +590,5 @@ private:
         }
     }
 };
+
+
